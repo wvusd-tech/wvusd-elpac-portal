@@ -621,36 +621,38 @@ export default function App() {
 
   if (isAuthResolving || (isLoading && students.length === 0)) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-900 via-slate-800 to-blue-950 flex flex-col justify-center items-center p-4 text-slate-800">
-        <div className="fixed inset-0 overflow-hidden pointer-events-none opacity-20">
-          <div className="absolute -top-40 -left-40 w-96 h-96 rounded-full bg-blue-500 blur-3xl" />
-          <div className="absolute top-1/2 -right-40 w-96 h-96 rounded-full bg-indigo-500 blur-3xl" />
-        </div>
-
-        <div className="relative w-full max-w-sm bg-white rounded-3xl shadow-2xl border border-slate-200/80 p-8 text-center space-y-5 animate-fade-in backdrop-blur-md">
-          <div className="w-20 h-20 mx-auto p-2.5 bg-slate-50 rounded-2xl border border-slate-200 shadow-xs flex items-center justify-center">
+      <div className="min-h-screen flex flex-col justify-between p-4 sm:p-8 bg-gradient-to-b from-slate-100 via-slate-50 to-blue-50 font-sans selection:bg-blue-600 selection:text-white">
+        <div className="max-w-md w-full mx-auto my-auto space-y-6 text-center animate-fade-in">
+          <div className="flex flex-col items-center">
             <img
               src={DISTRICT_LOGO}
-              alt="Walnut Valley USD"
-              className="w-full h-full object-contain"
+              alt="WVUSD Logo"
+              className="h-20 w-auto object-contain drop-shadow-md mb-3"
             />
+            <span className="text-xs font-black uppercase tracking-widest text-blue-900">
+              Walnut Valley Unified School District
+            </span>
+            <h1 className="text-2xl sm:text-3xl font-black text-slate-900 mt-1">
+              ELPAC Student Data & Intervention Portal
+            </h1>
           </div>
 
-          <div className="space-y-2">
-            <div className="flex items-center justify-center gap-2 text-blue-600 font-bold text-sm">
-              <Loader2 className="w-5 h-5 animate-spin" />
-              <span>Loading WVUSD ELPAC Portal...</span>
+          <div className="bg-white p-6 sm:p-8 rounded-3xl shadow-xl border border-slate-200 space-y-4">
+            <Loader2 className="w-8 h-8 text-blue-600 animate-spin mx-auto" />
+            <div className="space-y-1">
+              <h3 className="text-sm font-bold text-slate-900">
+                Loading Live WVUSD ELPAC Student Dataset
+              </h3>
+              <p className="text-xs text-slate-500 leading-relaxed">
+                Verifying Google credentials and synchronizing California ELPAC longitudinal data...
+              </p>
             </div>
-            <p className="text-xs text-slate-500 leading-relaxed">
-              Verifying Google credentials and synchronizing California ELPAC longitudinal data...
-            </p>
-          </div>
-
-          <div className="pt-2 border-t border-slate-100 flex items-center justify-center gap-2 text-[11px] text-slate-400 font-mono">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            <span>Secure District SSO Session</span>
           </div>
         </div>
+
+        <footer className="text-center text-xs text-slate-400 pt-6">
+          © 2026 Walnut Valley Unified School District • Educational Services & Data Analytics
+        </footer>
       </div>
     );
   }
