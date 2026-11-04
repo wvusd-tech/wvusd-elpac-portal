@@ -1,6 +1,7 @@
 // src/components/StudentCard.jsx
 import React from 'react';
 import { PERFORMANCE_LEVELS, isBubbleStudent, getSiteLogo, DISTRICT_LOGO } from '../config.js';
+import { ELD_ACADEMIC_YEARS, ELD_YEAR_LABELS } from '../utils/dataParser.js';
 import { 
   TrendingUp, 
   TrendingDown, 
@@ -10,7 +11,8 @@ import {
   FileText, 
   Languages, 
   Home, 
-  ExternalLink
+  ExternalLink,
+  MessageSquareQuote
 } from 'lucide-react';
 
 export default function StudentCard({ student, subjectFocus = 'ALL', onClick }) {
@@ -33,7 +35,9 @@ export default function StudentCard({ student, subjectFocus = 'ALL', onClick }) 
     oralDelta,
     writtenDelta,
     elaDelta, 
-    mathDelta 
+    mathDelta,
+    eldByYear = {},
+    teacherComments = []
   } = student;
 
   const primaryOverall = latestOverall || latestEla;
@@ -51,6 +55,7 @@ export default function StudentCard({ student, subjectFocus = 'ALL', onClick }) 
   );
 
   const siteLogo = getSiteLogo(school);
+  const latestTeacherComment = teacherComments.length > 0 ? teacherComments[0] : null;
 
   const getDeltaPill = (delta, label) => {
     if (delta === null || delta === undefined) {
@@ -99,6 +104,38 @@ export default function StudentCard({ student, subjectFocus = 'ALL', onClick }) 
       >
         L{conf.level} · {conf.label.split(' ')[0]}
       </span>
+    );
+  };
+
+  const getMiniIntervalCell = (intervalRec, seasonLabel) => {
+    const level = intervalRec?.performanceLevel;
+    const score = intervalRec?.scaledScore;
+    const conf = level ? PERFORMANCE_LEVELS[level] : null;
+
+    if (!level && !score) {
+      return (
+        <div
+          className="flex items-center justify-between px-1.5 py-0.5 rounded bg-slate-50 border border-slate-200/70 text-[10px] text-slate-400 font-mono"
+          title={`${seasonLabel}: Pending / Untested`}
+        >
+          <span className="font-semibold text-[9px] uppercase text-slate-400">{seasonLabel[0]}</span>
+          <span>—</span>
+        </div>
+      );
+    }
+
+    return (
+      <div
+        className={`flex items-center justify-between px-1.5 py-0.5 rounded border text-[10px] font-mono ${
+          conf ? conf.badgeClass : 'bg-slate-100 text-slate-700 border-slate-200'
+        }`}
+        title={`${seasonLabel}: ${conf ? `Level ${level} (${conf.label})` : ''}${score ? ` • SS ${score}` : ''}`}
+      >
+        <span className="font-sans font-extrabold text-[9px] uppercase opacity-75">{seasonLabel[0]}</span>
+        <span className="font-bold">
+          {level ? `L${level}` : score}
+        </span>
+      </div>
     );
   };
 
@@ -154,7 +191,7 @@ export default function StudentCard({ student, subjectFocus = 'ALL', onClick }) 
         )}
 
         {/* Demographic/Program Indicator Badges (SPED, 504, EL Status, Homeless/Foster) */}
-        <div className="flex flex-wrap items-center gap-1.5 mb-3 min-h-[22px]">
+        <div className="flex flex-wrap items-center gap-1.5 mb-2.5 min-h-[22px]">
           {flags?.sped && (
             <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-bold rounded-md bg-purple-100 text-purple-800 border border-purple-200">
               <ShieldAlert className="w-2.5 h-2.5 text-purple-600" />
@@ -189,10 +226,43 @@ export default function StudentCard({ student, subjectFocus = 'ALL', onClick }) 
             <span className="text-[10px] text-slate-400 font-medium px-1">GenEd</span>
           )}
         </div>
+
+        {/* Multi-Year ELD Progression Strip (Fall vs. Spring across '24-'27) */}
+        <div className="bg-slate-50/90 border border-slate-200/80 rounded-xl p-2 mb-2.5">
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+              Multi-Year ELD Progression
+            </span>
+            <span className="text-[9px] font-mono text-slate-400">
+              Fall (F) vs. Spring (S)
+            </span>
+          </div>
+
+          <div className="grid grid-cols-3 gap-1.5">
+            {ELD_ACADEMIC_YEARS.map(yrKey => {
+              const yrMeta = ELD_YEAR_LABELS[yrKey];
+              const yrData = eldByYear[yrKey] || {};
+              return (
+                <div
+                  key={yrKey}
+                  className="bg-white rounded-lg p-1.5 border border-slate-200/70 space-y-1"
+                >
+                  <div className="text-[10px] font-extrabold text-slate-700 text-center font-mono border-b border-slate-100 pb-0.5">
+                    {yrMeta.short} ELD
+                  </div>
+                  <div className="grid grid-cols-2 gap-1">
+                    {getMiniIntervalCell(yrData.fall, 'Fall')}
+                    {getMiniIntervalCell(yrData.spring, 'Spring')}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
       </div>
 
-      {/* Scores & Deltas Bottom Section */}
-      <div className="pt-2.5 border-t border-slate-100 space-y-2">
+      {/* Scores, Latest Teacher Comment & Deltas Bottom Section */}
+      <div className="pt-2 border-t border-slate-100 space-y-2">
         {/* Overall ELPAC Row (Part 0) */}
         {(subjectFocus === 'ALL' || !primaryOral) && (
           <div className="flex items-center justify-between text-xs">
@@ -241,10 +311,30 @@ export default function StudentCard({ student, subjectFocus = 'ALL', onClick }) 
           </div>
         )}
 
+        {/* Latest Teacher Comment Snippet */}
+        {latestTeacherComment && (
+          <div
+            className="flex items-start gap-1.5 bg-blue-50/50 border border-blue-100 rounded-lg px-2 py-1.5 text-[11px] text-slate-600"
+            title={`${latestTeacherComment.tabLabel} (${latestTeacherComment.testWindow}): ${latestTeacherComment.comment}`}
+          >
+            <MessageSquareQuote className="w-3.5 h-3.5 text-blue-600 shrink-0 mt-0.5" />
+            <div className="min-w-0 flex-1">
+              <span className="font-bold text-blue-900 mr-1">
+                {latestTeacherComment.shortYear} {latestTeacherComment.testWindow}:
+              </span>
+              <span className="line-clamp-1 italic text-slate-600">
+                "{latestTeacherComment.comment}"
+              </span>
+            </div>
+          </div>
+        )}
+
         {/* Quick Action Button for Modal Inspection */}
         <div className="pt-1.5 flex items-center justify-between border-t border-slate-100/60 mt-1">
-          <span className="text-[10px] text-slate-400 font-mono truncate max-w-[120px]">
-            {school || 'Longitudinal ELPAC'}
+          <span className="text-[10px] text-slate-400 font-mono truncate max-w-[130px]">
+            {teacherComments.length > 0
+              ? `${teacherComments.length} Teacher Notes`
+              : school || 'Longitudinal ELD'}
           </span>
           <button
             type="button"

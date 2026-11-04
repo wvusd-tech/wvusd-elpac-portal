@@ -326,8 +326,22 @@ export function generateNotebookLMPrompt(student, workflowType = 'IEP') {
   const flagStr = flags.length > 0 ? flags.join(", ") : "General Education";
 
   const elpacHist = (student.elpacHistory || []).map(h =>
-    `  - ${h.dateTaken || h.year} | Grade ${h.testGrade} | ${h.testId || 'ELPAC'} | Part ${h.part} (${h.partLabel || 'Overall'}): Scaled Score ${h.scaledScore || 'N/A'}, Level ${h.performanceLevel || h.rawLevel || 'N/A'}`
+    `  - ${h.academicYear ? `${h.academicYear} (${h.testWindow || 'Spring'})` : (h.dateTaken || h.year)} | Grade ${h.testGrade} | ${h.testId || 'ELPAC'} | Part ${h.part} (${h.partLabel || 'Overall'}): Scaled Score ${h.scaledScore || 'N/A'}, Level ${h.performanceLevel || h.rawLevel || 'N/A'}`
   ).join("\n") || "  - No historical ELPAC records";
+
+  const eldMultiYearSummary = (student.eldYearOrder || []).map(yrSlot => {
+    const fallStr = yrSlot.fall
+      ? `Level ${yrSlot.fall.performanceLevel || 'N/A'}${yrSlot.fall.scaledScore ? ` (${yrSlot.fall.scaledScore})` : ''}`
+      : '—';
+    const springStr = yrSlot.spring
+      ? `Level ${yrSlot.spring.performanceLevel || 'N/A'}${yrSlot.spring.scaledScore ? ` (${yrSlot.spring.scaledScore})` : ''}`
+      : '—';
+    return `  - ${yrSlot.tabLabel} (${yrSlot.fullLabel}): Fall: ${fallStr} | Spring: ${springStr}`;
+  }).join("\n") || "  - Multi-year ELD progression pending";
+
+  const teacherCommentsSummary = (student.teacherComments || []).map(c =>
+    `  - [${c.tabLabel} · ${c.testWindow}${c.dateTaken ? ` (${c.dateTaken})` : ''}]: "${c.comment}"`
+  ).join("\n") || "  - No qualitative teacher comments recorded";
 
   const ovDelta = student.overallDelta !== null && student.overallDelta !== undefined
     ? `${student.overallDelta > 0 ? '+' : ''}${student.overallDelta} pts`
@@ -349,6 +363,12 @@ Program Classifications: ${flagStr}
 Overall ELPAC (Part 0): ${student.latestOverall?.scaledScore || 'N/A'} (Level ${student.latestOverall?.performanceLevel || 'N/A'}), YoY Change: ${ovDelta} (${dfsStr})
 Oral Language (Part 1): ${student.latestOral?.scaledScore || 'N/A'} (Level ${student.latestOral?.performanceLevel || 'N/A'})
 Written Language (Part 2): ${student.latestWritten?.scaledScore || 'N/A'} (Level ${student.latestWritten?.performanceLevel || 'N/A'})
+
+**Multi-Year ELD Progression (2024–2027 Fall vs. Spring):**
+${eldMultiYearSummary}
+
+**Teacher & Counselor Qualitative Comments:**
+${teacherCommentsSummary}
 
 **Longitudinal ELPAC Assessment Record (Parts 0–6):**
 ${elpacHist}
@@ -373,6 +393,12 @@ Student Profile: ${flagStr}
 - Oral Language Score: ${student.latestOral?.scaledScore || 'N/A'} (Level ${student.latestOral?.performanceLevel || 'N/A'})
 - Written Language Score: ${student.latestWritten?.scaledScore || 'N/A'} (Level ${student.latestWritten?.performanceLevel || 'N/A'})
 
+**Multi-Year ELD Progression (2024–2027 Fall vs. Spring):**
+${eldMultiYearSummary}
+
+**Teacher & Counselor Qualitative Comments:**
+${teacherCommentsSummary}
+
 **ELPAC Longitudinal History:**
 ${elpacHist}
 
@@ -389,6 +415,12 @@ Student: ${student.name} (Grade ${student.grade}) | School: ${student.school}
 Current ELPAC Proficiency: Overall Level ${student.latestOverall?.performanceLevel || 'N/A'} | Oral Level ${student.latestOral?.performanceLevel || 'N/A'} | Written Level ${student.latestWritten?.performanceLevel || 'N/A'}
 Growth Velocity: Overall (${ovDelta})
 Demographics: ${flagStr}
+
+**Multi-Year ELD Progression (2024–2027 Fall vs. Spring):**
+${eldMultiYearSummary}
+
+**Teacher & Counselor Qualitative Comments:**
+${teacherCommentsSummary}
 
 **Instructions for NotebookLM:**
 Act as an expert California ELD Instructional Coach. Using the California ELD Standards (Emerging, Expanding, Bridging) and Universal Design for Learning (UDL):

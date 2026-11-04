@@ -4,6 +4,7 @@
 export const GOOGLE_SHEET_ID = "1JrSfw0pEvWNbkZ4nxgXJE2Vv30zkkbalpmHoojCLXXc";
 export const ELPAC_TAB_NAME = "ELPAC";
 export const ROSTER_TAB_NAME = "Roster Tab";
+export const ELD_MULTI_YEAR_TABS = ["24-25 ELD", "25-26 ELD", "26-27 ELD"];
 
 // Optional deployed Google Apps Script Web App URL (can be set via VITE_APPS_SCRIPT_URL or runtime storage)
 export const APPS_SCRIPT_URL =

@@ -9,6 +9,7 @@
 const SHEET_ID = '1JrSfw0pEvWNbkZ4nxgXJE2Vv30zkkbalpmHoojCLXXc';
 const ELPAC_TAB_NAME = 'ELPAC';
 const ROSTER_TAB_NAME = 'Roster Tab';
+const ELD_MULTI_YEAR_TABS = ['24-25 ELD', '25-26 ELD', '26-27 ELD'];
 const DEFAULT_SUPER_ADMINS = ['kwendland@wvusd.org'];
 
 function doGet(e) {
@@ -35,6 +36,13 @@ function doGet(e) {
 
     const rosterData = rosterSheet.getDataRange().getDisplayValues();
     const elpacData = elpacSheet.getDataRange().getDisplayValues();
+    const eldTabs = {};
+    ELD_MULTI_YEAR_TABS.forEach(tabName => {
+      const sheet = ss.getSheetByName(tabName);
+      if (sheet) {
+        eldTabs[tabName] = sheet.getDataRange().getDisplayValues();
+      }
+    });
 
     // 1. Parse Role-Based Access Control (Cols X=23, Y=24, Z=25) & Roster Map (Cols A=0 .. T=19)
     const superAdmins = new Set(DEFAULT_SUPER_ADMINS);
@@ -276,7 +284,10 @@ function doGet(e) {
         school: userSchool,
         authorized: true
       },
-      students: filteredStudents
+      students: filteredStudents,
+      elpacRows: elpacData,
+      rosterRows: rosterData,
+      eldTabs
     });
 
   } catch (err) {
