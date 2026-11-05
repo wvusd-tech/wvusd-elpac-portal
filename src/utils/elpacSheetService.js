@@ -18,6 +18,9 @@ import {
 import { STORAGE_KEYS } from './authStorage.js';
 import {
   analyzeSheetHeaders,
+  classifyColumnHeader,
+  extractStrictColumnAStudentId,
+  parsePartValue,
   parseEldScoreOrLevelCell,
   parseTeacherCommentCell,
   resolveAcademicPeriod,
@@ -154,6 +157,7 @@ function ensureStudentInMap(studentsMap, studentId, defaults = {}) {
       (lastName && firstName ? `${lastName}, ${firstName}` : firstName || lastName || `Student #${studentId}`);
 
     studentsMap.set(studentId, {
+      id: studentId,
       studentId,
       lastName,
       firstName,
@@ -180,7 +184,9 @@ function ensureStudentInMap(studentsMap, studentId, defaults = {}) {
         ...(defaults.flags || {})
       },
       elpacHistory: [],
-      rawTeacherComments: []
+      rawTeacherComments: [],
+      assessmentsByTab: {},
+      allParsedColumns: {}
     });
   }
   return studentsMap.get(studentId);
@@ -239,12 +245,11 @@ export function ingestDynamicSheetTab(rows = [], tabName = '', studentsMap, rbac
       }
     }
 
-    // Locate Student ID dynamically
-    const idCol = columns.find(c => c.type === 'STUDENT_ID');
-    const studentId = String(row[idCol ? idCol.index : 0] ?? '').trim();
-    if (!studentId || /^student\s*id$/i.test(studentId)) continue;
+    // Rule 1: Strict Column A (index 0) Student ID Binding for all student record matching and roster lookups
+    const studentId = extractStrictColumnAStudentId(row);
+    if (!studentId) continue;
 
-    // Extract demographic fields dynamically from matching header types
+    // Extract demographic fields dynamically from matching header types (regardless of letter position B+)
     const getColVal = (type) => {
       const c = columns.find(col => col.type === type && String(row[col.index] ?? '').trim() !== '');
       return c ? String(row[c.index]).trim() : '';
@@ -327,18 +332,36 @@ export function ingestDynamicSheetTab(rows = [], tabName = '', studentsMap, rbac
       student.flags.homelessFosterDetail = homelessFosterRaw;
     }
 
+    // Store dynamic header-mapped cells by tab (matching wvusd-data-portal's assessmentsByTab & allParsedColumns)
+    if (tabName && !isRosterTab) {
+      if (!student.assessmentsByTab[tabName]) student.assessmentsByTab[tabName] = {};
+      if (!student.allParsedColumns[tabName]) student.allParsedColumns[tabName] = {};
+      for (const col of columns) {
+        if (col.index === 0 || col.type === 'IGNORE') continue;
+        const cellText = String(row[col.index] ?? '').trim();
+        if (cellText !== '' && col.header) {
+          student.assessmentsByTab[tabName][col.header] = cellText;
+          student.allParsedColumns[tabName][col.header] = cellText;
+        }
+      }
+    }
+
+    // Extract row-level context fields (if present on this tab) so both row-based and wide columns can share them
+    const rowTestId = getColVal('ROW_TEST_ID') || tabName || 'ELPAC';
+    const rowPartRaw = getColVal('ROW_PART');
+    const rowPartNum = parsePartValue(rowPartRaw, rowTestId);
+    const rowDate = getColVal('ROW_DATE');
+    const rowWindowRaw = getColVal('ROW_WINDOW');
+    const rowYearRaw = getColVal('ROW_YEAR');
+    const effectiveTestGrade = testGradeRaw ? parseGradeNumber(testGradeRaw) : student.grade;
+
+    let pushedRowRecord = false;
+
     // 1. Process Row-based Long-Format ELPAC/ELD test record if present on this row
     if (hasRowFormatCols) {
-      const rowTestId = getColVal('ROW_TEST_ID') || tabName || 'ELPAC';
-      const rowPartRaw = getColVal('ROW_PART') || '0';
-      const rowPartNum = !isNaN(Number(rowPartRaw)) ? Number(rowPartRaw) : 0;
-      const rowDate = getColVal('ROW_DATE');
-      const rowWindowRaw = getColVal('ROW_WINDOW');
-      const rowYearRaw = getColVal('ROW_YEAR');
       const rowScoreRaw = getColVal('ROW_SCALED_SCORE');
       const rowLevelRaw = getColVal('ROW_PERF_LEVEL');
 
-      const effectiveTestGrade = testGradeRaw ? parseGradeNumber(testGradeRaw) : student.grade;
       const parsedScoreCell = parseEldScoreOrLevelCell(rowScoreRaw, effectiveTestGrade);
       const parsedLevelCell = parseEldScoreOrLevelCell(rowLevelRaw, effectiveTestGrade);
 
@@ -354,11 +377,13 @@ export function ingestDynamicSheetTab(rows = [], tabName = '', studentsMap, rbac
         parsedScoreCell?.performanceLevel ??
         null;
 
+      const resolvedRowDate = rowDate || parsedScoreCell?.dateTaken || parsedLevelCell?.dateTaken || '';
+
       if (scaledScore !== null || performanceLevel !== null) {
         const period = resolveAcademicPeriod({
-          academicYear: detectAcademicYear(rowYearRaw || rowTestId, tabName),
-          testWindow: detectTestWindow(rowWindowRaw || rowTestId, rowDate).window,
-          dateTaken: rowDate,
+          academicYear: detectAcademicYear(rowYearRaw || rowTestId, `${resolvedRowDate} ${tabName}`),
+          testWindow: detectTestWindow(`${rowWindowRaw} ${rowTestId}`, resolvedRowDate).window,
+          dateTaken: resolvedRowDate,
           tabName
         });
         const partMeta = getPartLabel(rowPartNum);
@@ -375,11 +400,11 @@ export function ingestDynamicSheetTab(rows = [], tabName = '', studentsMap, rbac
           testGradeRaw: testGradeRaw || String(effectiveTestGrade),
           testId: rowTestId,
           part: rowPartNum,
-          partRaw: rowPartRaw,
+          partRaw: rowPartRaw || String(rowPartNum),
           partLabel: partMeta.label,
           partShortLabel: partMeta.shortLabel,
           category: partMeta.category,
-          dateTaken: rowDate,
+          dateTaken: resolvedRowDate,
           year: period.calendarYear,
           academicYear: period.academicYear,
           shortYear: period.shortYear,
@@ -392,6 +417,7 @@ export function ingestDynamicSheetTab(rows = [], tabName = '', studentsMap, rbac
           rawLevel: rowLevelRaw || (performanceLevel ? `Level ${performanceLevel}` : ''),
           teacherComment: rowCommentVal || null
         });
+        pushedRowRecord = true;
       }
     }
 
@@ -415,20 +441,25 @@ export function ingestDynamicSheetTab(rows = [], tabName = '', studentsMap, rbac
 
     // Group wide score/level columns by (academicYear, testWindow, part) so paired Score + Level columns merge cleanly
     const wideIntervalsMap = new Map();
+    const fallbackRowAcademicYear = detectAcademicYear(rowYearRaw || rowTestId, `${rowDate} ${tabName}`);
+    const fallbackRowWindow = detectTestWindow(`${rowWindowRaw} ${rowTestId}`, rowDate).window;
 
     for (const col of columns) {
       if (!['ELD_SCALED_SCORE', 'ELD_LEVEL', 'ELD_SCORE_OR_LEVEL'].includes(col.type)) continue;
       const cellVal = row[col.index];
-      const parsed = parseEldScoreOrLevelCell(cellVal, student.grade);
+      const parsed = parseEldScoreOrLevelCell(cellVal, effectiveTestGrade);
       if (!parsed) continue;
 
+      const effectiveDateForCol = parsed.dateTaken || (!col.academicYear ? rowDate : '') || '';
       const period = resolveAcademicPeriod({
-        academicYear: col.academicYear,
-        testWindow: col.testWindow,
-        dateTaken: parsed.dateTaken,
+        academicYear: col.academicYear || fallbackRowAcademicYear,
+        testWindow: col.testWindow || fallbackRowWindow,
+        dateTaken: effectiveDateForCol,
         tabName
       });
-      const partNum = col.part ?? 0;
+      const partNum = (col.part !== undefined && col.part !== null && col.part !== 0)
+        ? col.part
+        : (rowPartRaw !== '' ? rowPartNum : 0);
       const key = `${period.academicYear}__${period.testWindow}__${partNum}`;
 
       const existing = wideIntervalsMap.get(key) || {
@@ -443,7 +474,7 @@ export function ingestDynamicSheetTab(rows = [], tabName = '', studentsMap, rbac
         scaledScore: null,
         performanceLevel: null,
         rawLevel: '',
-        dateTaken: wideDatesMap.get(`${period.academicYear}__${period.testWindow}`) || parsed.dateTaken || '',
+        dateTaken: wideDatesMap.get(`${period.academicYear}__${period.testWindow}`) || effectiveDateForCol || '',
         header: col.header
       };
 
@@ -454,8 +485,8 @@ export function ingestDynamicSheetTab(rows = [], tabName = '', studentsMap, rbac
         existing.performanceLevel = parsed.performanceLevel;
         existing.rawLevel = parsed.rawLevel;
       }
-      if (!existing.dateTaken && parsed.dateTaken) {
-        existing.dateTaken = parsed.dateTaken;
+      if (!existing.dateTaken && effectiveDateForCol) {
+        existing.dateTaken = effectiveDateForCol;
       }
 
       wideIntervalsMap.set(key, existing);
@@ -465,16 +496,16 @@ export function ingestDynamicSheetTab(rows = [], tabName = '', studentsMap, rbac
       const partMeta = getPartLabel(entry.part);
       const lvl =
         entry.performanceLevel ??
-        normalizePerformanceLevel(entry.rawLevel, entry.scaledScore, student.grade);
+        normalizePerformanceLevel(entry.rawLevel, entry.scaledScore, effectiveTestGrade);
 
-      // Estimate grade at time of test based on academic year offset relative to 2026-2027
+      // Estimate grade at time of test based on academic year offset relative to 2026-2027 (unless explicit TEST_GRADE column was provided)
       const yrDiff =
         entry.academicYear === '2024-2025'
           ? 2
           : entry.academicYear === '2025-2026'
           ? 1
           : 0;
-      const inferredGrade = Math.max(0, student.grade - yrDiff);
+      const inferredGrade = testGradeRaw ? effectiveTestGrade : Math.max(0, student.grade - yrDiff);
 
       // Avoid duplicating an identical record if already pushed
       const alreadyExists = student.elpacHistory.some(
@@ -487,8 +518,8 @@ export function ingestDynamicSheetTab(rows = [], tabName = '', studentsMap, rbac
       if (!alreadyExists) {
         student.elpacHistory.push({
           testGrade: inferredGrade,
-          testGradeRaw: String(inferredGrade),
-          testId: `${entry.shortYear} ELD (${entry.testWindow})`,
+          testGradeRaw: testGradeRaw || String(inferredGrade),
+          testId: rowTestId && !isRosterTab && rowTestId !== tabName ? rowTestId : `${entry.shortYear} ELD (${entry.testWindow})`,
           part: entry.part,
           partRaw: String(entry.part),
           partLabel: partMeta.label,
@@ -510,17 +541,18 @@ export function ingestDynamicSheetTab(rows = [], tabName = '', studentsMap, rbac
     }
 
     // 3. Extract wide Teacher Comment columns associated with student evaluation records
-    // (Skip un-scoped row-level TEACHER_COMMENT columns if they were already consumed by hasRowFormatCols above)
+    // (Skip un-scoped row-level TEACHER_COMMENT columns only if they were already attached to a pushed row record above)
     for (const col of columns) {
       if (col.type !== 'TEACHER_COMMENT') continue;
-      if (hasRowFormatCols && !col.academicYear && !col.testWindow) continue;
+      if (pushedRowRecord && !col.academicYear && !col.testWindow) continue;
 
       const cleanComment = parseTeacherCommentCell(row[col.index]);
       if (!cleanComment) continue;
 
       const period = resolveAcademicPeriod({
-        academicYear: col.academicYear,
-        testWindow: col.testWindow,
+        academicYear: col.academicYear || fallbackRowAcademicYear,
+        testWindow: col.testWindow || fallbackRowWindow,
+        dateTaken: rowDate,
         tabName
       });
 
@@ -529,7 +561,7 @@ export function ingestDynamicSheetTab(rows = [], tabName = '', studentsMap, rbac
         shortYear: period.shortYear,
         tabLabel: period.tabLabel,
         testWindow: col.testWindow || period.testWindow,
-        dateTaken: wideDatesMap.get(`${period.academicYear}__${col.testWindow || period.testWindow}`) || '',
+        dateTaken: wideDatesMap.get(`${period.academicYear}__${col.testWindow || period.testWindow}`) || rowDate || '',
         comment: cleanComment,
         header: col.header,
         tabName
@@ -787,58 +819,123 @@ export function normalizeAppsScriptPayload(data, userEmail = '', fallbackName = 
       : [];
 
     // Also inspect any wide-column assessment objects attached to the student (e.g. assessmentsByTab or metrics)
+    // using the exact same dynamic header inspection architecture as wvusd-data-portal
     const rawComments = Array.isArray(s.teacherComments) ? [...s.teacherComments] : [];
-    if (s.assessmentsByTab && typeof s.assessmentsByTab === 'object') {
-      for (const [tabName, tabObj] of Object.entries(s.assessmentsByTab)) {
-        for (const [header, val] of Object.entries(tabObj || {})) {
-          if (/\b(?:comment|note|observation|feedback)\b/i.test(header)) {
-            const cText = parseTeacherCommentCell(val);
-            if (cText) {
-              const period = resolveAcademicPeriod({
-                academicYear: detectAcademicYear(header, tabName),
-                testWindow: detectTestWindow(header).window,
-                tabName
-              });
-              rawComments.push({
-                academicYear: period.academicYear,
-                shortYear: period.shortYear,
-                tabLabel: period.tabLabel,
-                testWindow: period.testWindow,
-                comment: cText
-              });
-            }
-          } else {
-            const parsedCell = parseEldScoreOrLevelCell(val, s.grade);
-            if (parsedCell) {
-              const period = resolveAcademicPeriod({
-                academicYear: detectAcademicYear(header, tabName),
-                testWindow: detectTestWindow(header, parsedCell.dateTaken).window,
-                dateTaken: parsedCell.dateTaken,
-                tabName
-              });
-              history.push({
-                testGrade: s.grade,
-                testId: `${period.shortYear} ELD (${period.testWindow})`,
-                part: 0,
-                partLabel: getPartLabel(0).label,
-                partShortLabel: getPartLabel(0).shortLabel,
-                category: 'OVERALL',
-                dateTaken: parsedCell.dateTaken || `${period.testWindow} ${period.calendarYear}`,
-                year: period.calendarYear,
-                academicYear: period.academicYear,
-                shortYear: period.shortYear,
-                tabLabel: period.tabLabel,
-                testWindow: period.testWindow,
-                windowOrder: period.windowOrder,
-                sortKey: period.sortKey,
-                scaledScore: parsedCell.scaledScore,
-                performanceLevel: parsedCell.performanceLevel,
-                rawLevel: parsedCell.rawLevel
-              });
-            }
+    const inspectKeyValueMap = (tabName, tabObj) => {
+      if (!tabObj || typeof tabObj !== 'object') return;
+      const wideDatesMap = new Map();
+      const wideIntervalsMap = new Map();
+      const entries = Object.entries(tabObj);
+
+      for (const [header, val] of entries) {
+        if (val === null || val === undefined || val === '') continue;
+        const colInfo = classifyColumnHeader(header, tabName, 1);
+        if (colInfo.type === 'ELD_DATE' || colInfo.type === 'ROW_DATE') {
+          const dVal = String(val).trim();
+          if (dVal) {
+            const period = resolveAcademicPeriod({
+              academicYear: colInfo.academicYear,
+              testWindow: colInfo.testWindow,
+              dateTaken: dVal,
+              tabName
+            });
+            wideDatesMap.set(`${period.academicYear}__${period.testWindow}`, dVal);
           }
         }
       }
+
+      for (const [header, val] of entries) {
+        if (val === null || val === undefined || val === '') continue;
+        const colInfo = classifyColumnHeader(header, tabName, 1);
+
+        if (colInfo.type === 'TEACHER_COMMENT') {
+          const cText = parseTeacherCommentCell(val);
+          if (cText) {
+            const period = resolveAcademicPeriod({
+              academicYear: colInfo.academicYear || detectAcademicYear(header, tabName),
+              testWindow: colInfo.testWindow || detectTestWindow(header).window,
+              tabName
+            });
+            rawComments.push({
+              academicYear: period.academicYear,
+              shortYear: period.shortYear,
+              tabLabel: period.tabLabel,
+              testWindow: colInfo.testWindow || period.testWindow,
+              dateTaken: wideDatesMap.get(`${period.academicYear}__${colInfo.testWindow || period.testWindow}`) || '',
+              comment: cText
+            });
+          }
+        } else if (['ELD_SCALED_SCORE', 'ELD_LEVEL', 'ELD_SCORE_OR_LEVEL', 'ROW_SCALED_SCORE', 'ROW_PERF_LEVEL'].includes(colInfo.type)) {
+          const parsedCell = parseEldScoreOrLevelCell(val, s.grade);
+          if (!parsedCell) continue;
+
+          const period = resolveAcademicPeriod({
+            academicYear: colInfo.academicYear || detectAcademicYear(header, tabName),
+            testWindow: colInfo.testWindow || detectTestWindow(header, parsedCell.dateTaken).window,
+            dateTaken: parsedCell.dateTaken,
+            tabName
+          });
+          const partNum = colInfo.part ?? 0;
+          const key = `${period.academicYear}__${period.testWindow}__${partNum}`;
+
+          const existing = wideIntervalsMap.get(key) || {
+            academicYear: period.academicYear,
+            shortYear: period.shortYear,
+            tabLabel: period.tabLabel,
+            testWindow: period.testWindow,
+            windowOrder: period.windowOrder,
+            calendarYear: period.calendarYear,
+            sortKey: period.sortKey,
+            part: partNum,
+            scaledScore: null,
+            performanceLevel: null,
+            rawLevel: '',
+            dateTaken: wideDatesMap.get(`${period.academicYear}__${period.testWindow}`) || parsedCell.dateTaken || ''
+          };
+
+          if (parsedCell.scaledScore !== null) existing.scaledScore = parsedCell.scaledScore;
+          if (parsedCell.performanceLevel !== null) {
+            existing.performanceLevel = parsedCell.performanceLevel;
+            existing.rawLevel = parsedCell.rawLevel;
+          }
+          if (!existing.dateTaken && parsedCell.dateTaken) existing.dateTaken = parsedCell.dateTaken;
+
+          wideIntervalsMap.set(key, existing);
+        }
+      }
+
+      for (const entry of wideIntervalsMap.values()) {
+        const partMeta = getPartLabel(entry.part);
+        const lvl = entry.performanceLevel ?? normalizePerformanceLevel(entry.rawLevel, entry.scaledScore, s.grade);
+        history.push({
+          testGrade: s.grade,
+          testId: `${entry.shortYear} ELD (${entry.testWindow})`,
+          part: entry.part,
+          partLabel: partMeta.label,
+          partShortLabel: partMeta.shortLabel,
+          category: partMeta.category,
+          dateTaken: entry.dateTaken || `${entry.testWindow} ${entry.calendarYear}`,
+          year: entry.calendarYear,
+          academicYear: entry.academicYear,
+          shortYear: entry.shortYear,
+          tabLabel: entry.tabLabel,
+          testWindow: entry.testWindow,
+          windowOrder: entry.windowOrder,
+          sortKey: entry.sortKey,
+          scaledScore: entry.scaledScore,
+          performanceLevel: lvl,
+          rawLevel: entry.rawLevel || (lvl ? `Level ${lvl}` : '')
+        });
+      }
+    };
+
+    if (s.assessmentsByTab && typeof s.assessmentsByTab === 'object') {
+      for (const [tabName, tabObj] of Object.entries(s.assessmentsByTab)) {
+        inspectKeyValueMap(tabName, tabObj);
+      }
+    }
+    if (s.metrics && typeof s.metrics === 'object') {
+      inspectKeyValueMap('ELPAC', s.metrics);
     }
 
     const { eldByYear, eldYearOrder, teacherComments } = buildMultiYearEldMatrix(
