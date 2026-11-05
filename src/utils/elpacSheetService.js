@@ -1362,34 +1362,37 @@ export async function fetchElpacPortalData(userEmail, fallbackName = '') {
     (typeof window !== 'undefined' && localStorage.getItem(STORAGE_KEYS.CUSTOM_GAS_URL)) ||
     APPS_SCRIPT_URL;
 
-  // 1. Try Apps Script Web App URL if configured
+  // 1. Fetch from deployed Apps Script Web App URL (matching wvusd-sbac-portal & wvusd-data-portal)
   if (customGasUrl && customGasUrl.startsWith('https://script.google.com')) {
-    try {
-      const separator = customGasUrl.includes('?') ? '&' : '?';
-      const res = await fetch(`${customGasUrl}${separator}email=${encodeURIComponent(userEmail)}`, {
-        method: 'GET',
-        redirect: 'follow'
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (!data.error && (Array.isArray(data.students)?.length > 0 || Array.isArray(data.elpacRows)?.length > 0)) {
-          return normalizeAppsScriptPayload(data, userEmail, fallbackName);
-        }
-      }
-    } catch (err) {
-      console.warn('Apps Script fetch notice, falling back to direct Google Sheet fetch:', err);
+    const separator = customGasUrl.includes('?') ? '&' : '?';
+    const res = await fetch(`${customGasUrl}${separator}email=${encodeURIComponent(userEmail)}`, {
+      method: 'GET',
+      redirect: 'follow'
+    });
+    if (!res.ok) {
+      throw new Error(`Server returned HTTP ${res.status}`);
     }
+    const data = await res.json();
+    if (data.error) {
+      return { error: data.error, user: data.user };
+    }
+    if (Array.isArray(data.students) || Array.isArray(data.elpacRows)) {
+      return normalizeAppsScriptPayload(data, userEmail, fallbackName);
+    }
+    throw new Error("Invalid response format: 'students' array missing from Google Apps Script.");
   }
 
   // 2. Try Direct Google Sheet fetch for Sheet ID: 1JrSfw0pEvWNbkZ4nxgXJE2Vv30zkkbalpmHoojCLXXc
   try {
     const baseSheetUrl = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/gviz/tq`;
 
-    const [elpacRows, rosterRows, ...eldTabResults] = await Promise.all([
+    const [elpacRows, rosterRowsPrimary, rosterRowsLegacy, ...eldTabResults] = await Promise.all([
       fetchOptionalTabCsvRows(baseSheetUrl, ELPAC_TAB_NAME),
       fetchOptionalTabCsvRows(baseSheetUrl, ROSTER_TAB_NAME),
+      fetchOptionalTabCsvRows(baseSheetUrl, 'Roster Tab'),
       ...ELD_MULTI_YEAR_TABS.map(tab => fetchOptionalTabCsvRows(baseSheetUrl, tab))
     ]);
+    const rosterRows = rosterRowsPrimary || rosterRowsLegacy;
 
     const additionalTabs = {};
     ELD_MULTI_YEAR_TABS.forEach((tabName, idx) => {

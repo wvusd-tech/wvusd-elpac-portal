@@ -3,12 +3,13 @@
 
 export const GOOGLE_SHEET_ID = "1JrSfw0pEvWNbkZ4nxgXJE2Vv30zkkbalpmHoojCLXXc";
 export const ELPAC_TAB_NAME = "ELPAC";
-export const ROSTER_TAB_NAME = "Roster Tab";
+export const ROSTER_TAB_NAME = "Roster";
 export const ELD_MULTI_YEAR_TABS = ["24-25 ELD", "25-26 ELD", "26-27 ELD"];
 
-// Optional deployed Google Apps Script Web App URL (can be set via VITE_APPS_SCRIPT_URL or runtime storage)
+// Deployed Google Apps Script Web App URL
 export const APPS_SCRIPT_URL =
-  (typeof import.meta !== "undefined" && import.meta.env?.VITE_APPS_SCRIPT_URL) || "";
+  (typeof import.meta !== "undefined" && import.meta.env?.VITE_APPS_SCRIPT_URL) ||
+  "https://script.google.com/macros/s/AKfycbx9xceSDfh5jM5kkoE_c3i3GJcRBD0w4pnMxuf3jrl85QOd49pWHTQjQ0GECroW7FmI/exec";
 
 export const GOOGLE_CLIENT_ID = "243489966839-kcopbaj692oat1p2hoq5lrcddq9n4k17.apps.googleusercontent.com";
 
