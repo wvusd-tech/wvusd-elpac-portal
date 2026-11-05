@@ -300,12 +300,12 @@ function extractStandardRosterRbac_(rosterRows, rbacContext) {
     }
   }
 
-  // Check O:P (cols 14 & 15) and X:Y (cols 23 & 24) for Site Admin routing
+  // Check X:Y (cols 23 & 24) on wide Roster layouts, or O:P (cols 14 & 15) on compact 17-column layouts
   for (let i = 1; i < rosterRows.length; i++) {
     const row = rosterRows[i];
     if (!row) continue;
 
-    if (row.length > 15) {
+    if (row.length <= 20 && row.length > 15) {
       const siteO = String(row[14] || '').trim();
       const emailsP = parseEmailList_(row[15]);
       if (siteO && emailsP.length > 0) {
@@ -432,7 +432,16 @@ function extractStrictColumnAStudentId(row) {
   if (/^(?:student\s*id|id|local\s*id|stu\s*id|perm\s*id|ssid|state\s*id|student\s*#)$/i.test(raw)) {
     return '';
   }
-  return raw.replace(/^#/, '').replace(/\.0+$/, '').trim();
+  const stripped = raw.replace(/^#/, '').replace(/\.0+$/, '').replace(/^0+/, '').trim();
+  return stripped || (raw === '0' ? '0' : '');
+}
+
+function isRawSchoolCodeOrPlaceholder_(val) {
+  const s = (val !== null && val !== undefined ? val : '').toString().trim();
+  if (!s) return true;
+  if (/^(?:wvusd\s*school|all|unknown|unassigned|n\/a|none|-|\d+)$/i.test(s)) return true;
+  if (/^[a-z0-9]{2,5}$/i.test(s)) return true;
+  return false;
 }
 
 function detectAcademicYear(headerText, fallbackContext) {
@@ -533,7 +542,21 @@ function classifyColumnHeader(rawHeader, tabContext, colIndex) {
   if (/\bparent\s*phone\b|\bhome\s*phone\b|\bcontact\s*phone\b|\bguardian\s*phone\b|\bphone\b|\bcell\b/i.test(lower)) return { type: 'PARENT_PHONE', header: header };
   if (/\bparent\s*name\b|\bparent\/guardian\b|\bguardian\s*name\b|\bparent\b|\bguardian\b/i.test(lower)) return { type: 'PARENT_NAME', header: header };
   if (/^school\s*code$|^site\s*code$|^loc\s*code$/i.test(lower)) return { type: 'SCHOOL_CODE', header: header };
-  if (/^(?:school|school\s*name|school\s*site|site|enrolled\s*school|home\s*school|enrollment\s*site\s*name)$/i.test(lower)) return { type: 'SCHOOL_NAME', header: header };
+  if (/^(?:school|school\s*name|school\s*site|site|enrolled\s*school|home\s*school|enrollment\s*site\s*name)$/i.test(lower)) {
+    const isRosterTabContext = /^roster(?:\s*tab)?$/i.test((tabContext || '').toString().trim());
+    // Rule: Exclusive use of Column O (index 14) on the Roster tab for School Name.
+    // Column J (index 9) on Roster or any "School" column on non-Roster tabs is treated as SCHOOL_CODE, never SCHOOL_NAME.
+    if (isRosterTabContext && colIndex === 14) {
+      return { type: 'SCHOOL_NAME', header: header };
+    }
+    if (isRosterTabContext && colIndex !== 14) {
+      return { type: 'SCHOOL_CODE', header: header };
+    }
+    if (!isRosterTabContext) {
+      return { type: 'SCHOOL_CODE', header: header };
+    }
+    return { type: 'SCHOOL_NAME', header: header };
+  }
   if (/^(?:site\s*name|routing\s*site|admin\s*site)$/i.test(lower)) return { type: 'SITE_ROUTING', header: header };
   if (/\badmin\s*access\b|\bsite\s*admin|\badmin\s*email/i.test(lower)) return { type: 'SITE_ADMIN_EMAILS', header: header };
   if (/\bsuper\s*admin\b/i.test(lower)) return { type: 'SUPER_ADMIN_EMAILS', header: header };
@@ -645,12 +668,16 @@ function ingestDynamicSheetTab(rows, tabName, studentsMap, rbacContext, isRoster
     ['ROW_TEST_ID', 'ROW_PART', 'ROW_SCALED_SCORE', 'ROW_PERF_LEVEL', 'ROW_DATE', 'ROW_WINDOW', 'ROW_YEAR'].indexOf(c.type) !== -1
   );
 
+  // When Roster has already been ingested, non-Roster tabs ("ELPAC", "24-25 ELD", etc.)
+  // strictly link to active Roster students by Column A Student ID and never create orphan records.
+  const hasRosterStudents = !isRosterTab && studentsMap.size > 0;
+
   for (let i = startRow; i < rows.length; i++) {
     const row = rows[i];
     if (!row || !Array.isArray(row)) continue;
 
-    // Extract dynamic RBAC columns if present
-    if (rbacContext) {
+    // Extract dynamic RBAC columns if present on Roster
+    if (rbacContext && isRosterTab) {
       let siteRoutingVal = '';
       const adminEmailsList = [];
 
@@ -679,6 +706,11 @@ function ingestDynamicSheetTab(rows, tabName, studentsMap, rbacContext, isRoster
     const studentId = extractStrictColumnAStudentId(row);
     if (!studentId) continue;
 
+    // On non-Roster tabs (e.g. ELPAC), link strictly to active Roster students
+    if (hasRosterStudents && !studentsMap.has(studentId)) {
+      continue;
+    }
+
     const formatCellVal = (rawCell) => {
       if (rawCell === null || rawCell === undefined || rawCell === '') return '';
       if (rawCell instanceof Date) {
@@ -703,8 +735,21 @@ function ingestDynamicSheetTab(rows, tabName, studentsMap, rbacContext, isRoster
     const parentEmail = getColVal('PARENT_EMAIL');
     const parentPhone = getColVal('PARENT_PHONE');
     const parentName = getColVal('PARENT_NAME');
-    const schoolCode = getColVal('SCHOOL_CODE');
-    const schoolName = getColVal('SCHOOL_NAME');
+    const schoolCode = isRosterTab
+      ? (row.length > 9 && isRawSchoolCodeOrPlaceholder_(row[9]) ? formatCellVal(row[9]) : getColVal('SCHOOL_CODE'))
+      : '';
+
+    // Rule: Exclusive use of Column O (index 14) on the Roster tab for School Name.
+    // Non-Roster tabs (ELPAC, 24-25 ELD, etc.) NEVER set or overwrite student.school.
+    let schoolName = '';
+    if (isRosterTab) {
+      const colOSchoolName = row.length > 14 ? formatCellVal(row[14]) : '';
+      const candidateSchool = colOSchoolName || (row.length <= 14 ? getColVal('SCHOOL_NAME') : '');
+      if (candidateSchool && !isRawSchoolCodeOrPlaceholder_(candidateSchool)) {
+        schoolName = candidateSchool;
+      }
+    }
+
     const staffName = getColVal('STAFF_NAME');
     const staffEmail = getColVal('STAFF_EMAIL').toLowerCase();
     const spedRaw = getColVal('SPED');
@@ -717,11 +762,12 @@ function ingestDynamicSheetTab(rows, tabName, studentsMap, rbacContext, isRoster
 
     if (!studentsMap.has(studentId)) {
       const fullName = fullNameRaw || (lastName && firstName ? (lastName + ', ' + firstName) : (firstName || lastName || ('Student #' + studentId)));
-      const resolvedSchool = schoolName || 'WVUSD School';
+      const resolvedSchool = schoolName || '';
       const gradeBand = getGradeBand(gradeNum, resolvedSchool);
       studentsMap.set(studentId, {
         id: studentId,
         studentId: studentId,
+        isFromRoster: isRosterTab,
         lastName: lastName,
         firstName: firstName,
         name: fullName,
@@ -756,6 +802,7 @@ function ingestDynamicSheetTab(rows, tabName, studentsMap, rbacContext, isRoster
     }
 
     const student = studentsMap.get(studentId);
+    if (isRosterTab) student.isFromRoster = true;
     if (lastName) student.lastName = lastName;
     if (firstName) student.firstName = firstName;
     if (fullNameRaw) {
@@ -767,7 +814,7 @@ function ingestDynamicSheetTab(rows, tabName, studentsMap, rbacContext, isRoster
       student.grade = parseGradeNumber(gradeRaw);
       student.gradeLevel = gradeRaw;
     }
-    if (schoolName) {
+    if (isRosterTab && schoolName) {
       student.school = schoolName;
       student.site = schoolName;
     }

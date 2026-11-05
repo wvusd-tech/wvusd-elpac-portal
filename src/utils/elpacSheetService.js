@@ -20,6 +20,10 @@ import {
   analyzeSheetHeaders,
   classifyColumnHeader,
   extractStrictColumnAStudentId,
+  isRawSchoolCodeOrPlaceholder,
+  getSiteCanonicalKey,
+  getCodeCanonicalKey,
+  matchesSchoolSite,
   parsePartValue,
   parseEldScoreOrLevelCell,
   parseTeacherCommentCell,
@@ -210,12 +214,17 @@ export function ingestDynamicSheetTab(rows = [], tabName = '', studentsMap, rbac
     ['ROW_TEST_ID', 'ROW_PART', 'ROW_SCALED_SCORE', 'ROW_PERF_LEVEL', 'ROW_DATE', 'ROW_WINDOW', 'ROW_YEAR'].includes(c.type)
   );
 
+  // If Roster has already been ingested, non-Roster assessment tabs ("ELPAC", "24-25 ELD", etc.)
+  // strictly link to active Roster students by Column A Student ID and never create orphan records.
+  const hasRosterStudents =
+    !isRosterTab && Array.from(studentsMap.values()).some(st => st.isFromRoster);
+
   for (let i = startRow; i < rows.length; i++) {
     const row = rows[i];
     if (!row || !Array.isArray(row)) continue;
 
     // Extract RBAC emails if present in this tab
-    if (rbacContext) {
+    if (rbacContext && isRosterTab) {
       let siteRoutingVal = '';
       const adminEmailsList = [];
 
@@ -249,6 +258,11 @@ export function ingestDynamicSheetTab(rows = [], tabName = '', studentsMap, rbac
     const studentId = extractStrictColumnAStudentId(row);
     if (!studentId) continue;
 
+    // On non-Roster tabs (e.g. ELPAC), link strictly to active Roster students when Roster is present
+    if (hasRosterStudents && !studentsMap.has(studentId)) {
+      continue;
+    }
+
     // Extract demographic fields dynamically from matching header types (regardless of letter position B+)
     const getColVal = (type) => {
       const c = columns.find(col => col.type === type && String(row[col.index] ?? '').trim() !== '');
@@ -266,8 +280,21 @@ export function ingestDynamicSheetTab(rows = [], tabName = '', studentsMap, rbac
     const parentEmail = getColVal('PARENT_EMAIL');
     const parentPhone = getColVal('PARENT_PHONE');
     const parentName = getColVal('PARENT_NAME');
-    const schoolCode = getColVal('SCHOOL_CODE');
-    const schoolName = getColVal('SCHOOL_NAME');
+    const schoolCode = isRosterTab
+      ? (row.length > 9 && isRawSchoolCodeOrPlaceholder(row[9]) ? String(row[9] ?? '').trim() : getColVal('SCHOOL_CODE'))
+      : '';
+
+    // Rule: Exclusive use of Column O (index 14) on the Roster tab for School Name.
+    // Non-Roster tabs (ELPAC, 24-25 ELD, etc.) NEVER set or overwrite student.school.
+    let schoolName = '';
+    if (isRosterTab) {
+      const colOSchoolName = row.length > 14 ? String(row[14] ?? '').trim() : '';
+      const candidateSchool = colOSchoolName || (row.length <= 14 ? getColVal('SCHOOL_NAME') : '');
+      if (candidateSchool && !isRawSchoolCodeOrPlaceholder(candidateSchool)) {
+        schoolName = candidateSchool;
+      }
+    }
+
     const staffName = getColVal('STAFF_NAME');
     const staffEmail = getColVal('STAFF_EMAIL').toLowerCase();
     const spedRaw = getColVal('SPED');
@@ -284,8 +311,12 @@ export function ingestDynamicSheetTab(rows = [], tabName = '', studentsMap, rbac
       name: fullNameRaw || (lastName && firstName ? `${lastName}, ${firstName}` : firstName || lastName || `Student #${studentId}`),
       grade: gradeNum ?? 5,
       gradeLevel: effectiveGradeStr || '5',
-      school: schoolName || 'WVUSD School'
+      school: schoolName || ''
     });
+
+    if (isRosterTab) {
+      student.isFromRoster = true;
+    }
 
     // Update student demographic fields when non-empty values are encountered
     if (lastName) student.lastName = lastName;
@@ -299,7 +330,7 @@ export function ingestDynamicSheetTab(rows = [], tabName = '', studentsMap, rbac
       student.grade = parseGradeNumber(gradeRaw);
       student.gradeLevel = gradeRaw;
     }
-    if (schoolName) {
+    if (isRosterTab && schoolName) {
       student.school = schoolName;
     }
     student.gradeBand = resolveGradeBand(student.grade, student.school);
@@ -570,6 +601,132 @@ export function ingestDynamicSheetTab(rows = [], tabName = '', studentsMap, rbac
   }
 }
 
+const FALLBACK_CANONICAL_SCHOOL_NAMES = {
+  castlerock: 'Castle Rock Elementary',
+  collegewood: 'Collegewood Elementary',
+  cjmorris: 'CJ Morris Elementary',
+  evergreen: 'Evergreen Elementary',
+  maplehill: 'Maple Hill Elementary',
+  quailsummit: 'Quail Summit Elementary',
+  vejar: 'Vejar Elementary',
+  walnutelementary: 'Walnut Elementary',
+  westhoff: 'Westhoff Elementary',
+  suzanne: 'Suzanne Middle School',
+  southpointe: 'South Pointe Middle School',
+  chaparral: 'Chaparral Middle School',
+  diamondbar: 'Diamond Bar High School',
+  walnuthigh: 'Walnut High School',
+  hockwalt: 'Ron Hockwalt Academies'
+};
+
+/**
+ * Harmonizes all student school names exclusively to the clean Column O (School Name) from the Roster:
+ * - Removes any raw school codes (e.g. from Column J or ELPAC tab) or duplicate site variations
+ * - Resolves any student record whose `school` was set to a raw school code by matching its
+ *   `schoolCode`, `staffEmail`, `staffName`, or canonical site key against the clean Column O School Names
+ * - Excludes orphan non-Roster placeholder records (`WVUSD School` with `Unassigned` staff) when Roster records exist
+ */
+export function harmonizeStudentSchoolNames(studentsList = []) {
+  if (!Array.isArray(studentsList) || studentsList.length === 0) return [];
+
+  const canonicalToCleanSchool = new Map();
+  const codeToCleanSchool = new Map();
+  const staffEmailToCleanSchool = new Map();
+  const staffNameToCleanSchool = new Map();
+
+  // Pass 1: Collect clean Column O School Names from Roster records
+  for (const s of studentsList) {
+    if (!s) continue;
+    const rawSchool = String(s.school || '').trim();
+    if (!rawSchool || isRawSchoolCodeOrPlaceholder(rawSchool)) continue;
+
+    const cKey = getSiteCanonicalKey(rawSchool);
+    if (cKey) {
+      const existing = canonicalToCleanSchool.get(cKey);
+      // Prefer the fuller descriptive Column O School Name if variations exist
+      if (!existing || rawSchool.length > existing.length) {
+        canonicalToCleanSchool.set(cKey, rawSchool);
+      }
+    }
+
+    const code = String(s.schoolCode || '').trim().toUpperCase();
+    if (code) {
+      codeToCleanSchool.set(code, canonicalToCleanSchool.get(cKey) || rawSchool);
+    }
+    const email = String(s.staffEmail || '').trim().toLowerCase();
+    if (email) {
+      staffEmailToCleanSchool.set(email, canonicalToCleanSchool.get(cKey) || rawSchool);
+    }
+    const staff = String(s.staffName || '').trim().toLowerCase();
+    if (staff && staff !== 'unassigned') {
+      staffNameToCleanSchool.set(staff, canonicalToCleanSchool.get(cKey) || rawSchool);
+    }
+  }
+
+  const hasCleanRosterStudents =
+    canonicalToCleanSchool.size > 0 ||
+    studentsList.some(
+      s =>
+        s &&
+        (s.isFromRoster ||
+          (s.school && !isRawSchoolCodeOrPlaceholder(s.school)) ||
+          (s.staffName && s.staffName !== 'Unassigned') ||
+          Boolean(s.staffEmail))
+    );
+
+  // Pass 2: Normalize every student's `school` to the clean Column O School Name and filter orphan test rows
+  const harmonized = [];
+  for (const s of studentsList) {
+    if (!s) continue;
+    const rawSchool = String(s.school || '').trim();
+    const rawCode = String(s.schoolCode || '').trim().toUpperCase();
+    const email = String(s.staffEmail || '').trim().toLowerCase();
+    const staff = String(s.staffName || '').trim().toLowerCase();
+
+    // Exclude non-Roster orphan test rows that have no Roster demographic/school match
+    const isOrphanPlaceholder =
+      !s.isFromRoster &&
+      (!rawSchool || isRawSchoolCodeOrPlaceholder(rawSchool)) &&
+      (!staff || staff === 'unassigned') &&
+      !email &&
+      !rawCode;
+
+    if (hasCleanRosterStudents && isOrphanPlaceholder) {
+      continue;
+    }
+
+    let resolvedSchool = '';
+    if (rawSchool && !isRawSchoolCodeOrPlaceholder(rawSchool)) {
+      const cKey = getSiteCanonicalKey(rawSchool);
+      resolvedSchool = (cKey && canonicalToCleanSchool.get(cKey)) || rawSchool;
+    } else {
+      // Resolve from schoolCode, rawSchool as code, staffEmail, staffName, or canonical code mapping
+      const lookupCode = rawCode || rawSchool.toUpperCase();
+      const cKey = getCodeCanonicalKey(lookupCode) || getCodeCanonicalKey(rawSchool);
+
+      resolvedSchool =
+        (lookupCode && codeToCleanSchool.get(lookupCode)) ||
+        (cKey && canonicalToCleanSchool.get(cKey)) ||
+        (email && staffEmailToCleanSchool.get(email)) ||
+        (staff && staffNameToCleanSchool.get(staff)) ||
+        (cKey && FALLBACK_CANONICAL_SCHOOL_NAMES[cKey]) ||
+        '';
+    }
+
+    if (!resolvedSchool && hasCleanRosterStudents) {
+      continue;
+    }
+
+    s.school = resolvedSchool || rawSchool;
+    s.site = s.school;
+    s.gradeBand = resolveGradeBand(s.grade, s.school);
+    s.staffLabel = s.gradeBand === 'Elementary' ? 'Teacher' : 'Counselor';
+    harmonized.push(s);
+  }
+
+  return harmonized;
+}
+
 /**
  * Finalizes each student's longitudinal metrics, Fall vs. Spring multi-year ELD progression matrix
  * (24-25 ELD, 25-26 ELD, 26-27 ELD), and Teacher Comments.
@@ -666,7 +823,7 @@ export function finalizeStudentLongitudinalRecords(studentsMap) {
     allStudents.push(student);
   }
 
-  return allStudents;
+  return harmonizeStudentSchoolNames(allStudents);
 }
 
 /**
@@ -720,11 +877,7 @@ export function parseSheetRowsToPortalData(
     userSchool = allowedSites[0] || 'ALL';
     if (userSchool !== 'ALL') {
       const matchedSiteStudents = allStudents.filter(s =>
-        allowedSites.some(
-          site =>
-            s.school.toLowerCase().includes(site.toLowerCase()) ||
-            site.toLowerCase().includes(s.school.toLowerCase())
-        )
+        allowedSites.some(site => matchesSchoolSite(s.school, site))
       );
       if (matchedSiteStudents.length > 0) {
         scopedStudents = matchedSiteStudents;
@@ -985,14 +1138,24 @@ export function normalizeAppsScriptPayload(data, userEmail = '', fallbackName = 
     };
   });
 
+  const harmonizedStudents = harmonizeStudentSchoolNames(normalizedStudents);
+  let resolvedUserSchool = data.user?.school || 'ALL';
+  if (resolvedUserSchool !== 'ALL' && isRawSchoolCodeOrPlaceholder(resolvedUserSchool)) {
+    const matchedSiteStudent = harmonizedStudents.find(s => matchesSchoolSite(s.school, resolvedUserSchool));
+    if (matchedSiteStudent) {
+      resolvedUserSchool = matchedSiteStudent.school;
+    }
+  }
+
   return {
     user: {
       ...data.user,
       email: data.user?.email || userEmail,
       name: data.user?.name || fallbackName || userEmail.split('@')[0],
+      school: resolvedUserSchool,
       authorized: data.user?.authorized !== false
     },
-    students: normalizedStudents
+    students: harmonizedStudents
   };
 }
 

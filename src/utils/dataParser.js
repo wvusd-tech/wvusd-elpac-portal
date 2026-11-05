@@ -152,7 +152,96 @@ export function extractStrictColumnAStudentId(row) {
   if (/^(?:student\s*id|id|local\s*id|stu\s*id|perm\s*id|ssid|state\s*id|student\s*#)$/i.test(raw)) {
     return '';
   }
-  return raw.replace(/^#/, '').trim();
+  return raw.replace(/^#/, '').replace(/\.0+$/, '').replace(/^0+/, '').trim();
+}
+
+/**
+ * Checks whether a value looks like a raw school code (e.g. "56", "CSR", "DBHS", "01")
+ * or placeholder rather than a clean Column O School Name.
+ */
+export function isRawSchoolCodeOrPlaceholder(val) {
+  if (!val) return true;
+  const s = String(val).trim();
+  if (!s) return true;
+  if (/^wvusd\s*school$/i.test(s) || /^all$/i.test(s) || /^unassigned$/i.test(s) || /^unknown$/i.test(s) || /^n\/a$/i.test(s)) {
+    return true;
+  }
+  // Purely numeric school code (e.g. "12", "56", "790", "6021125")
+  if (/^\d+$/.test(s)) return true;
+  // Short 1-5 character uppercase/alphanumeric school code without spaces (e.g. "CSR", "VEJ", "DBHS", "WHS", "SUZ", "SPT")
+  if (/^[A-Z0-9-]{1,5}$/.test(s)) return true;
+  return false;
+}
+
+/**
+ * Produces a canonical key for a WVUSD school site so duplicate site identifiers
+ * (e.g. "Castle Rock" vs "Castle Rock Elementary") resolve to the single Column O School Name.
+ */
+export function getSiteCanonicalKey(siteName) {
+  if (!siteName) return '';
+  const s = String(siteName).toLowerCase().trim();
+  if (!s || isRawSchoolCodeOrPlaceholder(siteName)) return '';
+  if (s.includes('castle rock')) return 'castle_rock';
+  if (s.includes('collegewood')) return 'collegewood';
+  if (s.includes('morris')) return 'cj_morris';
+  if (s.includes('evergreen')) return 'evergreen';
+  if (s.includes('maple hill')) return 'maple_hill';
+  if (s.includes('quail summit')) return 'quail_summit';
+  if (s.includes('vejar')) return 'vejar';
+  if (s.includes('westhoff')) return 'westhoff';
+  if (s.includes('walnut') && !s.includes('high')) return 'walnut_elementary';
+  if (s.includes('chaparral')) return 'chaparral';
+  if (s.includes('south pointe')) return 'south_pointe';
+  if (s.includes('suzanne')) return 'suzanne';
+  if (s.includes('diamond bar')) return 'diamond_bar';
+  if (s.includes('walnut high')) return 'walnut_high';
+  if (s.includes('hockwalt')) return 'hockwalt';
+  return s.replace(/\s+/g, ' ');
+}
+
+/**
+ * Maps known WVUSD school codes or abbreviations to their canonical key.
+ */
+export function getCodeCanonicalKey(codeOrText) {
+  if (!codeOrText) return '';
+  const u = String(codeOrText).toUpperCase().trim();
+  const map = {
+    CSR: 'castle_rock',
+    CWD: 'collegewood',
+    CJM: 'cj_morris',
+    MOR: 'cj_morris',
+    EVG: 'evergreen',
+    MPH: 'maple_hill',
+    QSM: 'quail_summit',
+    VEJ: 'vejar',
+    WLE: 'walnut_elementary',
+    WES: 'walnut_elementary',
+    WST: 'westhoff',
+    CHP: 'chaparral',
+    SPT: 'south_pointe',
+    SPMS: 'south_pointe',
+    SUZ: 'suzanne',
+    SMS: 'suzanne',
+    DBHS: 'diamond_bar',
+    DBH: 'diamond_bar',
+    WHS: 'walnut_high',
+    RHA: 'hockwalt'
+  };
+  return map[u] || getSiteCanonicalKey(codeOrText);
+}
+
+/**
+ * Checks whether a student's school matches the selected school filter from the dropdown.
+ */
+export function matchesSchoolSite(studentSchool, selectedSite) {
+  if (!selectedSite || selectedSite === 'ALL') return true;
+  if (!studentSchool) return false;
+  const a = String(studentSchool).trim();
+  const b = String(selectedSite).trim();
+  if (a === b || a.toLowerCase() === b.toLowerCase()) return true;
+  const keyA = getSiteCanonicalKey(a) || getCodeCanonicalKey(a);
+  const keyB = getSiteCanonicalKey(b) || getCodeCanonicalKey(b);
+  return Boolean(keyA && keyB && keyA === keyB);
 }
 
 /**
@@ -228,10 +317,27 @@ export function classifyColumnHeader(rawHeader = '', tabContext = '', colIndex =
   if (/\bparent\s*name\b|\bparent\/guardian\b|\bguardian\s*name\b|\bparent\b|\bguardian\b/i.test(lower)) {
     return { type: 'PARENT_NAME', header };
   }
-  if (/^school\s*code$|^site\s*code$|^loc\s*code$/i.test(lower)) {
+  const isRosterContext = /roster/i.test(String(tabContext || ''));
+
+  // Exclusive Column O (colIndex === 14) binding for School Name on Roster
+  if (isRosterContext && colIndex === 14) {
+    return { type: 'SCHOOL_NAME', header: header || 'School Name', isStrictColumnO: true };
+  }
+  if (/^school\s*code$|^site\s*code$|^loc\s*code$/i.test(lower) || (isRosterContext && colIndex === 9)) {
     return { type: 'SCHOOL_CODE', header };
   }
-  if (/^(?:school|school\s*name|school\s*site|site|enrolled\s*school|home\s*school)$/i.test(lower)) {
+  if (/^school\s*name$/i.test(lower)) {
+    return { type: 'SCHOOL_NAME', header };
+  }
+  if (/^(?:school|school\s*site|site|enrolled\s*school|home\s*school)$/i.test(lower)) {
+    // On the Roster tab, "School" in a non-Column-O position (e.g. Col J) is a raw school code
+    if (isRosterContext && colIndex !== null && colIndex !== 14) {
+      return { type: 'SCHOOL_CODE', header };
+    }
+    // On non-Roster tabs (ELPAC / ELD), ignore "School" / "Site" so they never overwrite Roster Column O
+    if (!isRosterContext && tabContext) {
+      return { type: 'SCHOOL_CODE', header };
+    }
     return { type: 'SCHOOL_NAME', header };
   }
   if (/^(?:site\s*name|routing\s*site|admin\s*site)$/i.test(lower)) {
@@ -324,8 +430,8 @@ export function classifyColumnHeader(rawHeader = '', tabContext = '', colIndex =
     /^(?:score|scaled|ss)$/i.test(lower);
 
   const hasExplicitLevel =
-    /\b(?:perf(?:ormance)?\s*level|prof(?:iciency)?\s*level|overall\s*level|initial\s*level|summative\s*level|domain\s*level|eld\s*level|elpac\s*level|initial\s*proficiency|overall\s*proficiency|proficiency|level(?:\s*1\s*[-–—]\s*4)?|lvl|pl|tier)\b/i.test(lower) ||
-    /^(?:level|proficiency|performance|pl|lvl)$/i.test(lower);
+    /\b(?:perf(?:ormance)?\s*(?:level|lvl)|perflvl|prof(?:iciency)?\s*(?:level|lvl)|overall\s*level|initial\s*level|summative\s*level|domain\s*level|eld\s*level|elpac\s*level|initial\s*proficiency|overall\s*proficiency|proficiency|level(?:\s*1\s*[-–—]\s*4)?|lvl|pl|tier)\b/i.test(lower) ||
+    /^(?:level|proficiency|performance|pl|lvl|perflvl)$/i.test(lower);
 
   const hasEldOrDomainKeyword =
     /\b(?:score|level|proficiency|eld|elpac|overall|oral|written|listening|speaking|reading|writing|fall|spring|initial|summative|bridging|expanding|emerging|rubric|benchmark)\b/i.test(lower);

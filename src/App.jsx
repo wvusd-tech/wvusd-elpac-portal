@@ -9,7 +9,12 @@ import {
   clearUserSession,
   getStoredSession
 } from './utils/authStorage.js';
-import { fetchElpacPortalData } from './utils/elpacSheetService.js';
+import { fetchElpacPortalData, harmonizeStudentSchoolNames } from './utils/elpacSheetService.js';
+import {
+  isRawSchoolCodeOrPlaceholder,
+  getSiteCanonicalKey,
+  matchesSchoolSite
+} from './utils/dataParser.js';
 import HeaderBar from './components/HeaderBar.jsx';
 import ControlBar from './components/ControlBar.jsx';
 import ExecutiveOverview from './components/ExecutiveOverview.jsx';
@@ -144,9 +149,14 @@ export default function App() {
     if (!currentUser) return;
 
     if (currentUser.school && currentUser.school !== 'ALL') {
-      setSelectedSite(currentUser.school);
-      const schoolStudents = studentList.filter(s => s && s.school === currentUser.school);
-      const bands = [...new Set(schoolStudents.map(s => s?.gradeBand).filter(Boolean))];
+      const cleanSchoolStudents = studentList.filter(
+        s => s && matchesSchoolSite(s.school, currentUser.school)
+      );
+      const resolvedSchoolName =
+        cleanSchoolStudents.find(s => s.school && !isRawSchoolCodeOrPlaceholder(s.school))?.school ||
+        currentUser.school;
+      setSelectedSite(resolvedSchoolName);
+      const bands = [...new Set(cleanSchoolStudents.map(s => s?.gradeBand).filter(Boolean))];
       if (bands.length > 0) {
         setGradeBand(bands[0]);
       }
@@ -269,11 +279,12 @@ export default function App() {
         const cached = getCachedStudents();
 
         if (cached && cached.length > 0 && stored.user) {
+          const cleanCached = harmonizeStudentSchoolNames(cached);
           if (isMounted) {
             setUser(stored.user);
-            setStudents(cached);
-            autoConfigureUserContext(stored.user, cached);
-            applyUrlBookmarkParams(cached);
+            setStudents(cleanCached);
+            autoConfigureUserContext(stored.user, cleanCached);
+            applyUrlBookmarkParams(cleanCached);
             setIsAuthResolving(false);
           }
 
@@ -370,20 +381,28 @@ export default function App() {
     }
   };
 
-  // List of all school sites present in the loaded dataset
+  // List of all clean Column O School Names present in the loaded dataset
+  // Excludes raw school codes, placeholders, and duplicate site identifier variations
   const sitesList = useMemo(() => {
-    const set = new Set();
+    const byCanonicalKey = new Map();
     students.forEach(s => {
-      if (s.school && s.school.trim()) set.add(s.school.trim());
+      if (!s || !s.school) return;
+      const cleanName = s.school.trim();
+      if (!cleanName || isRawSchoolCodeOrPlaceholder(cleanName)) return;
+      const key = getSiteCanonicalKey(cleanName) || cleanName.toLowerCase();
+      const existing = byCanonicalKey.get(key);
+      if (!existing || cleanName.length > existing.length) {
+        byCanonicalKey.set(key, cleanName);
+      }
     });
-    return [...set].sort();
+    return Array.from(byCanonicalKey.values()).sort((a, b) => a.localeCompare(b));
   }, [students]);
 
   // List of grade bands present in current site
   const availableGradeBands = useMemo(() => {
     let pool = students;
     if (selectedSite !== 'ALL') {
-      pool = pool.filter(s => s.school === selectedSite);
+      pool = pool.filter(s => s && matchesSchoolSite(s.school, selectedSite));
     }
     const bands = new Set(pool.map(s => s.gradeBand).filter(Boolean));
     return ['Elementary', 'Middle', 'High'].filter(b => bands.has(b));
@@ -398,7 +417,7 @@ export default function App() {
     setActiveFlagFilter(null);
 
     if (site !== 'ALL') {
-      const siteStudents = students.filter(s => s.school === site);
+      const siteStudents = students.filter(s => s && matchesSchoolSite(s.school, site));
       const siteBands = [...new Set(siteStudents.map(s => s.gradeBand).filter(Boolean))];
       if (siteBands.length === 1) {
         setGradeBand(siteBands[0]);
@@ -420,7 +439,7 @@ export default function App() {
   // Compute available grades for current parameters
   const availableGrades = useMemo(() => {
     let pool = Array.isArray(students) ? students : [];
-    if (selectedSite !== 'ALL') pool = pool.filter(s => s && s.school === selectedSite);
+    if (selectedSite !== 'ALL') pool = pool.filter(s => s && matchesSchoolSite(s.school, selectedSite));
     pool = pool.filter(s => s && s.gradeBand === gradeBand);
 
     const gradesSet = new Set(pool.map(s => s.grade).filter(g => g !== undefined && g !== null));
@@ -438,7 +457,7 @@ export default function App() {
   const staffList = useMemo(() => {
     let pool = Array.isArray(students) ? students : [];
     if (selectedSite !== 'ALL') {
-      pool = pool.filter(s => s && s.school === selectedSite);
+      pool = pool.filter(s => s && matchesSchoolSite(s.school, selectedSite));
     }
     pool = pool.filter(s => s && s.gradeBand === gradeBand);
     if (selectedGrade !== 'ALL') {
@@ -481,7 +500,7 @@ export default function App() {
     let list = Array.isArray(students) ? students.filter(Boolean) : [];
 
     if (selectedSite !== 'ALL') {
-      list = list.filter(s => s && s.school === selectedSite);
+      list = list.filter(s => s && matchesSchoolSite(s.school, selectedSite));
     }
 
     list = list.filter(s => s && s.gradeBand === gradeBand);
