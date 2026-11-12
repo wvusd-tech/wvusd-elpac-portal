@@ -9,7 +9,11 @@ export const ELD_MULTI_YEAR_TABS = ["24-25 ELD", "25-26 ELD", "26-27 ELD"];
 // Deployed Google Apps Script Web App URL
 export const APPS_SCRIPT_URL =
   (typeof import.meta !== "undefined" && import.meta.env?.VITE_APPS_SCRIPT_URL) ||
-  "https://script.google.com/macros/s/AKfycbx9xceSDfh5jM5kkoE_c3i3GJcRBD0w4pnMxuf3jrl85QOd49pWHTQjQ0GECroW7FmI/exec";
+  "https://script.google.com/macros/s/AKfycbwXX9grvgB2n3MwPkrPlLswkOM9BpGv_Yid9OAAMQJAIOAibUKJ5qnam8O3Rnp07Cg2/exec";
+
+export const APP_SECRET_TOKEN =
+  (typeof import.meta !== "undefined" && import.meta.env?.VITE_APP_SECRET_TOKEN) ||
+  "";
 
 export const GOOGLE_CLIENT_ID = "243489966839-kcopbaj692oat1p2hoq5lrcddq9n4k17.apps.googleusercontent.com";
 

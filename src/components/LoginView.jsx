@@ -148,8 +148,14 @@ export default function LoginView({ onLoginSuccess, isLoading, authError }) {
           </div>
 
           {(localError || authError) && (
-            <div className="p-3 bg-rose-50 rounded-2xl border border-rose-200 text-xs text-rose-700 font-medium text-center animate-fade-in">
-              {localError || authError}
+            <div className="p-4 bg-rose-50 rounded-2xl border border-rose-200 text-xs text-rose-700 text-left space-y-1.5 animate-fade-in">
+              <div className="flex items-center gap-2 font-bold text-rose-900">
+                <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0" />
+                <span>{authError?.toLowerCase().includes('denied') || authError?.toLowerCase().includes('forbidden') || authError?.toLowerCase().includes('unauthorized') ? 'Access Denied / Unauthorized Account' : 'Authentication Error'}</span>
+              </div>
+              <p className="text-rose-700 leading-relaxed font-medium">
+                {localError || authError}
+              </p>
             </div>
           )}
 

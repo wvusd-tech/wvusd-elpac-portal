@@ -59,11 +59,30 @@ function handleRequest(e) {
       }
     }
 
-    // Resolve user email from ?email=, ?id_token=, ?test_email=, or active Google session
-    let userEmail = (params.email || '').toString().trim().toLowerCase();
+    // 1. App Token Verification (Read-side zero-trust check)
+    if (!verifyAppToken_(params, e)) {
+      return jsonResponse({
+        status: "Forbidden",
+        success: false,
+        message: "Invalid app token.",
+        error: "Invalid app token."
+      }, 403);
+    }
+
+    // 2. Resolve user email from ?email=, ?id_token=, ?test_email=, or active Google session
+    let userEmail = (params.email || params.userEmail || '').toString().trim().toLowerCase();
 
     if (!userEmail && params.id_token) {
-      userEmail = verifyIdToken_(params.id_token);
+      try {
+        userEmail = verifyIdToken_(params.id_token);
+      } catch (idErr) {
+        return jsonResponse({
+          status: "Forbidden",
+          success: false,
+          message: "Expired or invalid Google token.",
+          error: "Expired or invalid Google token."
+        }, 403);
+      }
     }
     if (!userEmail && params.test_email) {
       userEmail = (params.test_email || '').toString().trim().toLowerCase();
@@ -76,11 +95,14 @@ function handleRequest(e) {
       }
     }
 
-    if (!isAllowedWvusdEmail_(userEmail)) {
+    if (!userEmail || !isAllowedWvusdEmail_(userEmail)) {
       return jsonResponse({
-        error: 'Unauthorized: Access restricted to @wvusd.org and @sub.wvusd.org staff accounts.',
+        status: "Forbidden",
+        success: false,
+        message: "Unauthorized: Access restricted to @wvusd.org and @sub.wvusd.org staff accounts.",
+        error: "Unauthorized user.",
         user: { email: userEmail, authorized: false }
-      });
+      }, 403);
     }
 
     let ss;
@@ -90,23 +112,32 @@ function handleRequest(e) {
       ss = SpreadsheetApp.getActiveSpreadsheet();
     }
 
-    // Locate Roster tab ("Roster" or "Roster Tab") and ELPAC tab ("ELPAC")
+    // Locate Roster tab ("Roster" or "Roster Tab")
     let rosterSheet = null;
     for (let i = 0; i < ROSTER_TAB_NAMES.length; i++) {
       rosterSheet = ss.getSheetByName(ROSTER_TAB_NAMES[i]);
       if (rosterSheet) break;
     }
-    const elpacSheet = ss.getSheetByName(ELPAC_TAB_NAME);
     const usersSheet = ss.getSheetByName('Users') || ss.getSheetByName('User');
 
-    if (!rosterSheet && !elpacSheet) {
+    if (!rosterSheet) {
       return jsonResponse({
-        error: "Missing required tabs: 'Roster' or 'ELPAC'."
-      });
+        status: "Error",
+        success: false,
+        message: "Missing required 'Roster' tab.",
+        error: "Missing required 'Roster' tab."
+      }, 500);
     }
 
     const rosterRows = rosterSheet ? rosterSheet.getDataRange().getValues() : [];
-    const elpacRows = elpacSheet ? elpacSheet.getDataRange().getValues() : [];
+    if (!rosterRows || rosterRows.length < 2) {
+      return jsonResponse({
+        status: "Error",
+        success: false,
+        message: "Roster tab contains no data rows.",
+        error: "Roster tab contains no data rows."
+      }, 500);
+    }
 
     const rbacContext = {
       superAdmins: new Set(['kwendland@wvusd.org']),
@@ -118,17 +149,38 @@ function handleRequest(e) {
 
     const studentsMap = new Map();
 
-    // 1. Dynamically ingest Roster Tab (Strict Column A Student ID + dynamic header matching)
-    if (rosterRows.length > 0) {
-      ingestDynamicSheetTab(rosterRows, rosterSheet.getName(), studentsMap, rbacContext, true, ss);
+    // 1. Dynamically ingest Roster Tab FIRST (Strict Column A Student ID + dynamic header matching)
+    ingestDynamicSheetTab(rosterRows, rosterSheet.getName(), studentsMap, rbacContext, true, ss);
+
+    // 2. Staff Roster & Site Scope Verification BEFORE touching ELPAC or assessment data tabs
+    const allRosterStudents = Array.from(studentsMap.values());
+    const userAccess = resolveUserAccess_(userEmail, allRosterStudents, rbacContext, usersSheet);
+
+    if (!userAccess.authorized) {
+      return jsonResponse({
+        status: "Forbidden",
+        success: false,
+        message: "Unauthorized: Account not found in Roster or Users directory. Contact Tech TOSA for access.",
+        error: "Unauthorized user.",
+        user: userAccess
+      }, 403);
     }
 
-    // 2. Dynamically ingest Primary ELPAC Tab (Strict Column A Student ID + dynamic header matching)
+    // 3. Server-Side Scope Filtering: Retain only students matching the user's authorized site(s) / classroom
+    for (const [id, student] of studentsMap.entries()) {
+      if (!canViewStudent_(userAccess, student)) {
+        studentsMap.delete(id);
+      }
+    }
+
+    // 4. Ingest Primary ELPAC Tab strictly for scoped authorized students
+    const elpacSheet = ss.getSheetByName(ELPAC_TAB_NAME);
+    const elpacRows = elpacSheet ? elpacSheet.getDataRange().getValues() : [];
     if (elpacRows.length > 0) {
       ingestDynamicSheetTab(elpacRows, ELPAC_TAB_NAME, studentsMap, rbacContext, false, ss);
     }
 
-    // 3. Dynamically ingest any multi-year ELD Tabs ("24-25 ELD", "25-26 ELD", "26-27 ELD") or additional assessment tabs
+    // 5. Dynamically ingest any multi-year ELD Tabs ("24-25 ELD", "25-26 ELD", "26-27 ELD") or additional assessment tabs
     const allSheets = ss.getSheets();
     const availableTabs = [];
     for (let s = 0; s < allSheets.length; s++) {
@@ -152,17 +204,18 @@ function handleRequest(e) {
       }
     }
 
-    // 4. Finalize longitudinal histories, latest scores, growth deltas, and multi-year ELD matrices
+    // 6. Finalize longitudinal histories, latest scores, growth deltas, and multi-year ELD matrices
     const allStudents = [];
     for (const student of studentsMap.values()) {
       student.elpacHistory.sort((a, b) => {
         if ((a.year || 0) !== (b.year || 0)) return (a.year || 0) - (b.year || 0);
         if ((a.part ?? 0) !== (b.part ?? 0)) return (a.part ?? 0) - (b.part ?? 0);
-        return String(a.dateTaken || '').localeCompare(String(b.dateTaken || ''));
+        return 0;
       });
 
       const overallRecs = student.elpacHistory.filter(
-        r => r.part === 0 && (r.scaledScore !== null || r.performanceLevel !== null)
+        r => (r.part === 0 || r.part === '0' || r.part === 1 || r.part === 'Overall') &&
+             (r.scaledScore !== null || r.performanceLevel !== null)
       );
       const oralRecs = student.elpacHistory.filter(
         r => (r.part === 1 || r.part === 3 || r.part === 4) && (r.scaledScore !== null || r.performanceLevel !== null)
@@ -220,31 +273,42 @@ function handleRequest(e) {
       allStudents.push(student);
     }
 
-    // 5. Resolve RBAC User Role & Scope Students (SuperAdmin -> SiteAdmin -> Roster Teacher/Counselor -> Users Tab)
-    const userAccess = resolveUserAccess_(userEmail, allStudents, rbacContext, usersSheet);
-    if (!userAccess.authorized) {
-      return jsonResponse({
-        error: 'Account not found in Roster or Users directory. Contact Tech TOSA for access.',
-        user: userAccess
-      });
-    }
-
-    const scopedStudents = allStudents.filter(st => canViewStudent_(userAccess, st));
-
     return jsonResponse({
+      status: "Success",
+      success: true,
       user: userAccess,
       meta: {
-        totalStudents: scopedStudents.length,
+        totalStudents: allStudents.length,
         assessmentTabs: availableTabs,
         lastUpdated: new Date().toISOString()
       },
-      students: scopedStudents
+      students: allStudents
     });
   } catch (err) {
     return jsonResponse({
-      error: 'Server Error: ' + (err && err.message ? err.message : String(err))
-    });
+      status: "Error",
+      success: false,
+      error: 'Server Error: ' + (err && err.message ? err.message : String(err)),
+      message: err && err.message ? err.message : String(err)
+    }, 500);
   }
+}
+
+/**
+ * App Token Verification:
+ * Validates provided token against APP_SECRET_TOKEN in Script Properties.
+ */
+function verifyAppToken_(payload, e) {
+  var expectedToken = PropertiesService.getScriptProperties().getProperty("APP_SECRET_TOKEN");
+  if (!expectedToken) {
+    return true;
+  }
+  var providedToken = String(
+    (payload && payload.appToken) ||
+    (e && e.parameter && e.parameter.appToken) ||
+    ""
+  ).trim();
+  return providedToken === String(expectedToken).trim();
 }
 
 // ============================================================================

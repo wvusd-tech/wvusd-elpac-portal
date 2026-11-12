@@ -12,6 +12,7 @@ import {
   ROSTER_TAB_NAME,
   ELD_MULTI_YEAR_TABS,
   APPS_SCRIPT_URL,
+  APP_SECRET_TOKEN,
   normalizePerformanceLevel,
   getPartLabel
 } from '../config.js';
@@ -1528,16 +1529,34 @@ export async function fetchElpacPortalData(userEmail, fallbackName = '') {
   // 1. Fetch from deployed Apps Script Web App URL (matching wvusd-sbac-portal & wvusd-data-portal)
   if (customGasUrl && customGasUrl.startsWith('https://script.google.com')) {
     const separator = customGasUrl.includes('?') ? '&' : '?';
-    const res = await fetch(`${customGasUrl}${separator}email=${encodeURIComponent(userEmail)}`, {
+    const queryParams = new URLSearchParams({
+      email: (userEmail || '').trim().toLowerCase(),
+      appToken: APP_SECRET_TOKEN || ''
+    });
+    const res = await fetch(`${customGasUrl}${separator}${queryParams.toString()}`, {
       method: 'GET',
-      redirect: 'follow'
+      redirect: 'follow',
+      headers: {
+        'Accept': 'application/json'
+      }
     });
     if (!res.ok) {
       throw new Error(`Server returned HTTP ${res.status}`);
     }
     const data = await res.json();
+    if (data && (data.status === 'Forbidden' || data.success === false)) {
+      const error = new Error(data.message || data.error || 'Access Denied: Unauthorized request.');
+      error.status = 'Forbidden';
+      error.isForbidden = true;
+      throw error;
+    }
     if (data.error) {
-      return { error: data.error, user: data.user };
+      const error = new Error(data.error);
+      if (data.error.toLowerCase().includes('unauthorized') || data.error.toLowerCase().includes('forbidden')) {
+        error.status = 'Forbidden';
+        error.isForbidden = true;
+      }
+      throw error;
     }
     if (Array.isArray(data.students) || Array.isArray(data.elpacRows)) {
       return normalizeAppsScriptPayload(data, userEmail, fallbackName);

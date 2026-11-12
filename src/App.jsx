@@ -246,7 +246,14 @@ export default function App() {
 
     } catch (err) {
       console.error('Data fetch error:', err);
-      if (err.message && err.message.toLowerCase().includes('not authorized')) {
+      const isUnauthorized = err.isForbidden || (err.message && (
+        err.message.toLowerCase().includes('not authorized') ||
+        err.message.toLowerCase().includes('unauthorized') ||
+        err.message.toLowerCase().includes('forbidden') ||
+        err.message.toLowerCase().includes('invalid app token')
+      ));
+
+      if (isUnauthorized) {
         clearUserSession();
         setUser(null);
         setStudents([]);
