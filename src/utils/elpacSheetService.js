@@ -297,7 +297,11 @@ export function ingestDynamicSheetTab(rows = [], tabName = '', studentsMap, rbac
     }
 
     const staffName = getColVal('STAFF_NAME');
-    const staffEmail = getColVal('STAFF_EMAIL').toLowerCase();
+    const staffEmail = (
+      getColVal('STAFF_EMAIL') ||
+      (isRosterTab && row.length > 11 && String(row[11] ?? '').indexOf('@') !== -1 ? String(row[11]).trim() : '') ||
+      (isRosterTab && row.length > 5 && String(row[5] ?? '').indexOf('@') !== -1 ? String(row[5]).trim() : '')
+    ).toLowerCase();
     const spedRaw = getColVal('SPED');
     const plan504Raw = getColVal('PLAN_504');
     const elStatusRaw = getColVal('EL_STATUS');

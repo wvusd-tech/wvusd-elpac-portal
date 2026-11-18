@@ -625,7 +625,10 @@ function classifyColumnHeader(rawHeader, tabContext, colIndex) {
   if (/^(?:site\s*name|routing\s*site|admin\s*site)$/i.test(lower)) return { type: 'SITE_ROUTING', header: header };
   if (/\badmin\s*access\b|\bsite\s*admin|\badmin\s*email/i.test(lower)) return { type: 'SITE_ADMIN_EMAILS', header: header };
   if (/\bsuper\s*admin\b/i.test(lower)) return { type: 'SUPER_ADMIN_EMAILS', header: header };
-  if (/\b(?:teacher|counselor|staff|educator|homeroom|advisor)\s*email/i.test(lower)) return { type: 'STAFF_EMAIL', header: header };
+  if (
+    /^(?:email1?|email\s*1)$/i.test(lower) ||
+    /\b(?:teacher|counselor|staff|educator|homeroom|advisor)\s*email/i.test(lower)
+  ) return { type: 'STAFF_EMAIL', header: header };
   if (/^(?:teacher|teacher\s*name|counselor|counselor\s*name|teacher\/counselor\s*name|homeroom\s*teacher|eld\s*teacher|staff\s*name|staff|educator|advisor)$/i.test(lower)) return { type: 'STAFF_NAME', header: header };
   if (/^(?:sped|special\s*ed(?:ucation)?|iep|sped\s*flag|iep\s*status|swd|student\s*is\s*special\s*ed\??)$/i.test(lower)) return { type: 'SPED', header: header };
   if (/^(?:504|504\s*plan|section\s*504|504\s*accommodations|plan\s*504)$/i.test(lower)) return { type: 'PLAN_504', header: header };
@@ -699,7 +702,7 @@ function analyzeSheetHeaders(headerRow, tabName, isRosterFallback) {
 
   // Fallback only if Row 0 has no header strings at all
   const fallbackTypes = isRosterFallback
-    ? ['STUDENT_ID', 'FULL_NAME', 'GRADE', 'SCHOOL_NAME', 'STAFF_NAME', 'STAFF_EMAIL', 'HOMELESS_FOSTER', 'SPED', 'PLAN_504', 'EL_STATUS', 'IGNORE', 'IGNORE', 'IGNORE', 'IGNORE', 'SITE_ROUTING', 'SITE_ADMIN_EMAILS', 'SUPER_ADMIN_EMAILS']
+    ? ['STUDENT_ID', 'FULL_NAME', 'GRADE', 'SCHOOL_NAME', 'STAFF_NAME', 'STAFF_EMAIL', 'HOMELESS_FOSTER', 'SPED', 'PLAN_504', 'EL_STATUS', 'IGNORE', 'STAFF_EMAIL', 'IGNORE', 'IGNORE', 'SITE_ROUTING', 'SITE_ADMIN_EMAILS', 'SUPER_ADMIN_EMAILS']
     : ['STUDENT_ID', 'LAST_NAME', 'FIRST_NAME', 'TEST_GRADE', 'ROW_TEST_ID', 'ROW_PART', 'ROW_DATE', 'ROW_SCALED_SCORE', 'ROW_PERF_LEVEL'];
 
   const maxCols = Math.max((headerRow || []).length, fallbackTypes.length);
@@ -816,7 +819,11 @@ function ingestDynamicSheetTab(rows, tabName, studentsMap, rbacContext, isRoster
     }
 
     const staffName = getColVal('STAFF_NAME');
-    const staffEmail = getColVal('STAFF_EMAIL').toLowerCase();
+    const staffEmail = (
+      getColVal('STAFF_EMAIL') ||
+      (isRosterTab && row.length > 11 && String(row[11] || '').indexOf('@') !== -1 ? formatCellVal(row[11]) : '') ||
+      (isRosterTab && row.length > 5 && String(row[5] || '').indexOf('@') !== -1 ? formatCellVal(row[5]) : '')
+    ).toLowerCase();
     const spedRaw = getColVal('SPED');
     const plan504Raw = getColVal('PLAN_504');
     const elStatusRaw = getColVal('EL_STATUS');

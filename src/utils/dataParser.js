@@ -349,7 +349,10 @@ export function classifyColumnHeader(rawHeader = '', tabContext = '', colIndex =
   if (/\bsuper\s*admin\b/i.test(lower)) {
     return { type: 'SUPER_ADMIN_EMAILS', header };
   }
-  if (/\b(?:teacher|counselor|staff|educator|homeroom|advisor)\s*email\b/i.test(lower)) {
+  if (
+    /^(?:email1?|email\s*1)$/i.test(lower) ||
+    /\b(?:teacher|counselor|staff|educator|homeroom|advisor)\s*email\b/i.test(lower)
+  ) {
     return { type: 'STAFF_EMAIL', header };
   }
   if (/^(?:teacher|teacher\s*name|counselor|counselor\s*name|homeroom\s*teacher|eld\s*teacher|staff\s*name|staff|educator|advisor)$/i.test(lower)) {
