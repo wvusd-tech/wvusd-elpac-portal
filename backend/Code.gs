@@ -25,7 +25,7 @@
 
 const SHEET_ID = '1JrSfw0pEvWNbkZ4nxgXJE2Vv30zkkbalpmHoojCLXXc';
 const ELPAC_TAB_NAME = 'ELPAC';
-const ROSTER_TAB_NAMES = ['Roster', 'Roster Tab'];
+const ROSTER_TAB_NAMES = ['ELPAC Roster', 'Roster', 'Roster Tab'];
 const ELD_MULTI_YEAR_TABS = ['24-25 ELD', '25-26 ELD', '26-27 ELD'];
 const ALLOWED_DOMAINS = ['wvusd.org', 'sub.wvusd.org'];
 
@@ -190,6 +190,7 @@ function handleRequest(e) {
       if (
         lowerT === 'roster' ||
         lowerT === 'roster tab' ||
+        lowerT === 'elpac roster' ||
         lowerT === 'users' ||
         lowerT === 'user' ||
         tName === ELPAC_TAB_NAME
@@ -607,7 +608,7 @@ function classifyColumnHeader(rawHeader, tabContext, colIndex) {
   if (/\bparent\s*name\b|\bparent\/guardian\b|\bguardian\s*name\b|\bparent\b|\bguardian\b/i.test(lower)) return { type: 'PARENT_NAME', header: header };
   if (/^school\s*code$|^site\s*code$|^loc\s*code$/i.test(lower)) return { type: 'SCHOOL_CODE', header: header };
   if (/^(?:school|school\s*name|school\s*site|site|enrolled\s*school|home\s*school|enrollment\s*site\s*name)$/i.test(lower)) {
-    const isRosterTabContext = /^roster(?:\s*tab)?$/i.test((tabContext || '').toString().trim());
+    const isRosterTabContext = /^(?:elpac\s*)?roster(?:\s*tab)?$/i.test((tabContext || '').toString().trim());
     // Rule: Exclusive use of Column O (index 14) on the Roster tab for School Name.
     // Column J (index 9) on Roster or any "School" column on non-Roster tabs is treated as SCHOOL_CODE, never SCHOOL_NAME.
     if (isRosterTabContext && colIndex === 14) {

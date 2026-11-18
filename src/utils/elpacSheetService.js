@@ -862,32 +862,48 @@ export function parseSheetRowsToPortalData(
   // 4. Finalize longitudinal metrics, multi-year Fall/Spring matrix, and teacher comments
   const allStudents = finalizeStudentLongitudinalRecords(studentsMap);
 
-  // 5. Resolve User Role & Routing from dynamically extracted RBAC & Staff mappings
+  // 5. Resolve User Role & Routing with Strict Zero-Trust Enforcement
   const cleanEmail = String(userEmail || '').toLowerCase().trim();
-  let role = 'SuperAdmin';
-  let userSchool = 'ALL';
-  let userName = fallbackName || (cleanEmail ? cleanEmail.split('@')[0] : 'Staff');
-  let scopedStudents = allStudents;
+  if (!cleanEmail || !cleanEmail.includes('@')) {
+    return {
+      user: {
+        email: cleanEmail,
+        name: fallbackName || 'Staff',
+        role: 'Unauthorized',
+        school: 'NONE',
+        authorized: false
+      },
+      students: []
+    };
+  }
 
-  if (!cleanEmail || rbacContext.superAdmins.has(cleanEmail)) {
+  let role = 'Unauthorized';
+  let userSchool = 'NONE';
+  let userName = fallbackName || cleanEmail.split('@')[0];
+  let scopedStudents = [];
+
+  if (rbacContext.superAdmins.has(cleanEmail) || cleanEmail === 'kwendland@wvusd.org') {
     role = 'SuperAdmin';
     userSchool = 'ALL';
+    scopedStudents = allStudents;
   } else if (rbacContext.siteAdminMap.has(cleanEmail)) {
     role = 'SiteAdmin';
     const allowedSites = Array.from(rbacContext.siteAdminMap.get(cleanEmail));
-    userSchool = allowedSites[0] || 'ALL';
-    if (userSchool !== 'ALL') {
-      const matchedSiteStudents = allStudents.filter(s =>
-        allowedSites.some(site => matchesSchoolSite(s.school, site))
-      );
-      if (matchedSiteStudents.length > 0) {
-        scopedStudents = matchedSiteStudents;
-        userSchool = matchedSiteStudents[0].school;
-      }
-    }
+    userSchool = allowedSites.join(',');
+    scopedStudents = allStudents.filter(s =>
+      allowedSites.some(site => matchesSchoolSite(s.school, site))
+    );
   } else {
-    // Check Teacher / Counselor match
-    const emailMatches = allStudents.filter(s => s.staffEmail && s.staffEmail === cleanEmail);
+    // Check Teacher / Counselor match with delimiter parsing for co-teachers
+    const emailMatches = allStudents.filter(s => {
+      if (!s.staffEmail) return false;
+      const emails = String(s.staffEmail)
+        .toLowerCase()
+        .split(/[,;\n]+/)
+        .map(e => e.trim());
+      return emails.includes(cleanEmail);
+    });
+
     const nameTarget = String(fallbackName || '').toLowerCase().trim();
     const nameMatches =
       emailMatches.length === 0 && nameTarget
@@ -904,18 +920,25 @@ export function parseSheetRowsToPortalData(
       userName = sample.staffName || userName;
       userSchool = sample.school || 'ALL';
       role = sample.gradeBand === 'Elementary' ? 'ElementaryTeacher' : 'Counselor';
-    } else if (cleanEmail.includes('admin') || cleanEmail.includes('principal')) {
-      role = 'SiteAdmin';
-      userSchool = 'ALL';
+      scopedStudents = matchedRoster;
     } else {
-      role = 'SuperAdmin';
-      userSchool = 'ALL';
+      // ZERO-TRUST REJECTION: Instantly deny access to any unlisted email
+      return {
+        user: {
+          email: cleanEmail,
+          name: userName,
+          role: 'Unauthorized',
+          school: 'NONE',
+          authorized: false
+        },
+        students: []
+      };
     }
   }
 
   return {
     user: {
-      email: cleanEmail || 'kwendland@wvusd.org',
+      email: cleanEmail,
       name: userName,
       role,
       school: userSchool,
@@ -1568,13 +1591,14 @@ export async function fetchElpacPortalData(userEmail, fallbackName = '') {
   try {
     const baseSheetUrl = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEET_ID}/gviz/tq`;
 
-    const [elpacRows, rosterRowsPrimary, rosterRowsLegacy, ...eldTabResults] = await Promise.all([
+    const [elpacRows, rosterRowsPrimary, rosterRowsNamed, rosterRowsLegacy, ...eldTabResults] = await Promise.all([
       fetchOptionalTabCsvRows(baseSheetUrl, ELPAC_TAB_NAME),
       fetchOptionalTabCsvRows(baseSheetUrl, ROSTER_TAB_NAME),
+      fetchOptionalTabCsvRows(baseSheetUrl, 'ELPAC Roster'),
       fetchOptionalTabCsvRows(baseSheetUrl, 'Roster Tab'),
       ...ELD_MULTI_YEAR_TABS.map(tab => fetchOptionalTabCsvRows(baseSheetUrl, tab))
     ]);
-    const rosterRows = rosterRowsPrimary || rosterRowsLegacy;
+    const rosterRows = rosterRowsNamed || rosterRowsPrimary || rosterRowsLegacy;
 
     const additionalTabs = {};
     ELD_MULTI_YEAR_TABS.forEach((tabName, idx) => {
